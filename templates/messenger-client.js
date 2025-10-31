@@ -244,6 +244,13 @@ class Client {
     } else if (message.kind === 'SendDataMessage') {
       const socket = this.forwarderClients.get(message.forwarder_client_id);
       if (!socket) return;
+
+      if (!message.data || message.data.length === 0) {
+        socket.destroy();
+        this.forwarderClients.delete(message.forwarder_client_id);
+        return;
+      }
+
       socket.write(message.data);
     } else {
       console.log(`Received unknown message type: ${message.type}`);
