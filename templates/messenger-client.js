@@ -242,9 +242,9 @@ class Client {
         if (client?.socket) client.socket.destroy();
       }
     } else if (message.kind === 'SendDataMessage') {
-      const forwarderClient = this.forwarderClients.get(message.forwarder_client_id);
-      if (!forwarderClient) return;
-      forwarderClient.socket.write(message.data);
+      const socket = this.forwarderClients.get(message.forwarder_client_id);
+      if (!socket) return;
+      socket.write(message.data);
     } else {
       console.log(`Received unknown message type: ${message.type}`);
     }
