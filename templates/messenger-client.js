@@ -19,17 +19,13 @@ function decrypt(key, ciphertext) {
   return Buffer.concat([decipher.update(data), decipher.final()]);
 }
 
-
-
-
-
 /* Message Structures */
 
 const MSG = {
   INIT_FWD_REQ: 0x01,
   INIT_FWD_REP: 0x02,
-  SEND_DATA: 0x03,
-  CHECK_IN: 0x04,
+  SEND_DATA:    0x03,
+  CHECK_IN:     0x04,
 };
 
 const CheckInMessage = (messenger_id) => ({ kind: 'CheckInMessage', messenger_id });
@@ -203,12 +199,6 @@ class MessageBuilder {
   }
 }
 
-
-
-
-
-
-
 /* CLIENT */
 
 class Client {
@@ -223,18 +213,14 @@ class Client {
 
   deserializeMessages(data) {
     const messages = [];
-
     while (true) {
       if (data.length < 8) break;
-
       const potentialLength = data.readUInt32BE(4);
       if (data.length < potentialLength) break;
-
       const { leftover, message } = MessageParser.deserializeMessage(this.encryptionKey, data);
       messages.push(message);
       data = leftover;
     }
-
     return messages;
   }
 
@@ -249,11 +235,11 @@ class Client {
 
   async handleMessage(message) {
     if (message.kind === 'InitiateForwarderClientReq') {
-      await this.handleInitiateForwarderClientReq(
-        message.forwarder_client_id,
-        message.ip_address,
-        message.port
-      );
+      await this.handleInitiateForwarderClientReq({
+        forwarder_client_id: message.forwarder_client_id,
+        ip: message.ip_address,
+        port: message.port,
+      });
 
     } else if (message.kind === 'InitiateForwarderClientRep') {
       const forwarderClient = this.forwarderClients.get(message.forwarder_client_id);
@@ -270,44 +256,82 @@ class Client {
         return;
       }
 
-      this.stream(message.forwarder_client_id)
-        .catch(err => console.error('[!] Stream error:', err));
+      this.stream(message.forwarder_client_id);
 
     } else if (message.kind === 'SendDataMessage') {
       const fc = this.forwarderClients.get(message.forwarder_client_id);
       if (!fc) return;
 
       if (!message.data || message.data.length === 0) {
-        // remote says "done" -> close our TCP half
-        try { fc.socket.end(); } catch {}
-        return; // 'close' handler in stream() will delete the entry
+        try { fc.socket ? fc.socket.end() : fc.end?.(); } catch {}
+        return;
       }
 
-      fc.socket.write(message.data);
+      (fc.socket ? fc.socket : fc).write(message.data);
     } else {
       console.log(`[!] Received unknown message type: ${message.kind}`);
     }
   }
 
+  async handleInitiateForwarderClientReq({ forwarder_client_id, ip, port }) {
+    try {
+      const { socket, reason, bindAddress, bindPort, addressType } =
+        await this.connectTcp(ip, port, 5000);
+
+      // send rep first
+      this.sendDownstreamMessage(
+        InitiateForwarderClientRep(
+          forwarder_client_id,
+          bindAddress,
+          bindPort,
+          addressType,
+          reason
+        )
+      );
+
+      if (reason !== 0) return;
+
+      this.forwarderClients.set(forwarder_client_id, { socket });
+
+      // local -> upstream
+      socket.on('data', (chunk) => {
+        this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, chunk));
+      });
+
+      // lifecycle
+      this.stream(forwarder_client_id)
+        .catch(err => console.error('[!] Stream error:', err));
+
+    } catch (e) {
+      // if connectTcp threw (shouldn’t), fallback to general failure
+      this.sendDownstreamMessage(
+        InitiateForwarderClientRep(
+          forwarder_client_id,
+          '',
+          0,
+          0x01,
+          1
+        )
+      );
+    }
+  }
+
   stream(forwarder_client_id) {
-    const sock = this.forwarderClients.get(forwarder_client_id);
+    const entry = this.forwarderClients.get(forwarder_client_id);
+    const sock = entry && entry.socket ? entry.socket : entry;
     if (!sock) return;
 
     sock.on('data', async (chunk) => {
-      await this._sendDownstream({
-        type: TYPE.SendDataMessage,
-        forwarder_client_id,
-        data: chunk,
-      });
+      await this.sendDownstreamMessage(
+        SendDataMessage(forwarder_client_id, chunk)
+      );
     });
 
     const ender = async () => {
       try {
-        await this._sendDownstream({
-          type: TYPE.SendDataMessage,
-          forwarder_client_id,
-          data: Buffer.alloc(0),
-        });
+        await this.sendDownstreamMessage(
+          SendDataMessage(forwarder_client_id, Buffer.alloc(0))
+        );
       } finally {
         this.forwarderClients.delete(forwarder_client_id);
       }
@@ -316,43 +340,6 @@ class Client {
     sock.once('end', ender);
     sock.once('close', ender);
     sock.once('error', ender);
-  }
-
-  async handleInitiateForwarderClientReq({ forwarder_client_id, ip, port }) {
-    let reason = 0;
-    let sock = null;
-    try {
-      sock = await connectTcp(ip, port, 5000);
-      this.forwarderClients.set(forwarder_client_id, sock);
-
-      const bind = sock.address();
-      const bind_addr = (typeof bind.address === 'string') ? bind.address : '0.0.0.0';
-      const bind_port = bind.port || 0;
-      const address_type = (sock.remoteFamily === 'IPv6' || bind.family === 'IPv6') ? 4 : 1; // 1=IPv4, 4=IPv6 per your code
-
-      await this._sendDownstream({
-        type: TYPE.InitiateForwarderClientRep,
-        forwarder_client_id,
-        bind_addr,
-        bind_port,
-        address_type,
-        reason: 0,
-      });
-
-      // begin stream up to server
-      this._startStream(forwarder_client_id);
-    } catch (e) {
-      reason = mapSocketErrorToReason(e);
-      await this._sendDownstream({
-        type: TYPE.InitiateForwarderClientRep,
-        forwarder_client_id,
-        bind_addr: '0.0.0.0',
-        bind_port: 0,
-        address_type: 1,
-        reason,
-      });
-      if (sock) { try { sock.destroy(); } catch {} }
-    }
   }
 
   async connectTcp(host, port, timeoutMs = 5000) {
@@ -378,7 +365,7 @@ class Client {
         });
       });
 
-      const fail = (err) => {
+      const fail = () => {
         try { socket.destroy(); } catch {}
         finish({
           socket: null,
@@ -402,8 +389,9 @@ class Client {
     throw new Error('start() not implemented by subclass');
   }
 
-  send_downstream_data(messages) {
-    throw new Error('send_downstream_data(messages) not implemented by subclass');
+  // canonical name
+  sendDownstreamMessage(_message) {
+    throw new Error('sendDownstreamMessage(message) not implemented by subclass');
   }
 
 }
@@ -416,14 +404,12 @@ class WSClient extends Client {
     this.wsOptions = {
       headers: this.headers,
       rejectUnauthorized: false
-    }
+    };
   }
 
   async connect(){
-
     this.ws = new WebSocket(this.serverUrl, this.wsOptions);
 
-    // Same thing as "ws.connect()"
     await new Promise((resolve, reject) => {
       this.ws.once('open', resolve);
       this.ws.once('error', reject);
@@ -442,16 +428,16 @@ class WSClient extends Client {
     });
     const messages = this.deserializeMessages(msg);
     assert (messages.length > 0, `[!] Invalid response from server ${messages}`);
-    const checkInMessage = messages[0]
+    const checkInMessage = messages[0];
     assert.strictEqual(checkInMessage.kind, 'CheckInMessage', `[!] Invalid response from server: ${messages}`);
     this.identifier = checkInMessage.messenger_id;
   }
 
   async start() {
-
+    // flush queued downstream
     while (this.downstream_messages.length > 0) {
-      const msg = this.downstream_messages.shift(); // removes from front
-      this.send_downstream_message(msg);
+      const msg = this.downstream_messages.shift();
+      this.sendDownstreamMessage(msg);
     }
 
     this.ws.on('message', async (data) => {
@@ -462,19 +448,18 @@ class WSClient extends Client {
       }
     });
 
-    // block until socket closes or errors (no wrapping/catching)
     return new Promise((resolve, reject) => {
       this.ws.once('close', (code, reason) => resolve({ code, reason }));
       this.ws.once('error', reject);
     });
   }
 
-  send_downstream_data(downstream_message) {
+  sendDownstreamMessage(downstream_message) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.downstream_messages.push(downstream_message);
       return;
     }
-    const downstream_messages = [CheckInMessage(this.identifier), downstream_message]
+    const downstream_messages = [CheckInMessage(this.identifier), downstream_message];
     const payload = this.serializeMessages(downstream_messages);
     this.ws.send(payload);
   }
@@ -482,7 +467,6 @@ class WSClient extends Client {
 
 /* REMOTE PORT FORWARDER */
 
-// ---------- Remote Port Forwarder ----------
 class RemotePortForwarder {
   constructor(messenger, config) {
     this.messenger = messenger;
@@ -507,7 +491,7 @@ class RemotePortForwarder {
 
         this.messenger.forwarderClients.set(forwarder_client_id, { socket });
 
-        this.messenger.send_downstream_data(
+        this.messenger.sendDownstreamMessage(
           InitiateForwarderClientReq(
             forwarder_client_id,
             this.destination_host,
@@ -547,7 +531,6 @@ class RemotePortForwarder {
     return result;
   }
 }
-
 
 /* ARG PARSING */
 
@@ -658,7 +641,6 @@ const DEFAULTS = {
   RETRY_ATTEMPTS: {{ retry_attempts }},
   RETRY_DURATION: {{ retry_duration }},
 };
-
 
 if (require.main === module) {
   main().catch(console.error);
