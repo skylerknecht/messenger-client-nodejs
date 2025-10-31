@@ -270,39 +270,89 @@ class Client {
         return;
       }
 
-      // Equivalent to asyncio.create_task(self.stream(...))
       this.stream(message.forwarder_client_id)
         .catch(err => console.error('[!] Stream error:', err));
 
     } else if (message.kind === 'SendDataMessage') {
-      const forwarderClient = this.forwarderClients.get(message.forwarder_client_id);
-      if (!forwarderClient) return;
-      if (forwarderClient.socket) {
-        forwarderClient.socket.write(message.data);
+      const fc = this.forwarderClients.get(message.forwarder_client_id);
+      if (!fc) return;
+
+      if (!message.data || message.data.length === 0) {
+        // remote says "done" -> close our TCP half
+        try { fc.socket.end(); } catch {}
+        return; // 'close' handler in stream() will delete the entry
       }
+
+      fc.socket.write(message.data);
     } else {
       console.log(`[!] Received unknown message type: ${message.kind}`);
     }
   }
 
-  async stream(forwarderClientId) {
-    const fc = this.forwarderClients.get(forwarderClientId);
-    if (!fc || !fc.socket) {
-      throw new Error(`stream: no socket for ${forwarderClientId}`);
-    }
+  stream(forwarder_client_id) {
+    const sock = this.forwarderClients.get(forwarder_client_id);
+    if (!sock) return;
 
-    const sock = fc.socket;
-
-    // wait for the TCP side to finish; let errors bubble
-    await new Promise((resolve, reject) => {
-      sock.once('close', resolve);
-      sock.once('error', reject);
-      // if the ws closes first, you probably want to end the socket too:
-      // if (this.ws) this.ws.once('close', () => sock.destroy());
+    sock.on('data', async (chunk) => {
+      await this._sendDownstream({
+        type: TYPE.SendDataMessage,
+        forwarder_client_id,
+        data: chunk,
+      });
     });
 
-    // cleanup (idempotent)
-    this.forwarderClients.delete(forwarderClientId);
+    const ender = async () => {
+      try {
+        await this._sendDownstream({
+          type: TYPE.SendDataMessage,
+          forwarder_client_id,
+          data: Buffer.alloc(0),
+        });
+      } finally {
+        this.forwarderClients.delete(forwarder_client_id);
+      }
+    };
+
+    sock.once('end', ender);
+    sock.once('close', ender);
+    sock.once('error', ender);
+  }
+
+  async handleInitiateForwarderClientReq({ forwarder_client_id, ip, port }) {
+    let reason = 0;
+    let sock = null;
+    try {
+      sock = await connectTcp(ip, port, 5000);
+      this.forwarderClients.set(forwarder_client_id, sock);
+
+      const bind = sock.address();
+      const bind_addr = (typeof bind.address === 'string') ? bind.address : '0.0.0.0';
+      const bind_port = bind.port || 0;
+      const address_type = (sock.remoteFamily === 'IPv6' || bind.family === 'IPv6') ? 4 : 1; // 1=IPv4, 4=IPv6 per your code
+
+      await this._sendDownstream({
+        type: TYPE.InitiateForwarderClientRep,
+        forwarder_client_id,
+        bind_addr,
+        bind_port,
+        address_type,
+        reason: 0,
+      });
+
+      // begin stream up to server
+      this._startStream(forwarder_client_id);
+    } catch (e) {
+      reason = mapSocketErrorToReason(e);
+      await this._sendDownstream({
+        type: TYPE.InitiateForwarderClientRep,
+        forwarder_client_id,
+        bind_addr: '0.0.0.0',
+        bind_port: 0,
+        address_type: 1,
+        reason,
+      });
+      if (sock) { try { sock.destroy(); } catch {} }
+    }
   }
 
   async connectTcp(host, port, timeoutMs = 5000) {
@@ -342,25 +392,6 @@ class Client {
       socket.once('error', fail);
       socket.once('timeout', () => fail(new Error('Connection timeout')));
     });
-  }
-
-  async handleInitiateForwarderClientReq(forwarderClientId, ipAddress, port) {
-    const { socket, reason, bindAddress, bindPort, addressType } =
-      await this.connectTcp(ipAddress, port, 5000);
-
-    this.send_downstream_data(InitiateForwarderClientRep(forwarderClientId, bindAddress, bindPort, addressType, reason));
-
-    if (reason !== 0) return;
-
-    this.forwarderClients.set(forwarderClientId, { socket });
-
-    socket.on('data', (chunk) => {
-      this.send_downstream_data(SendDataMessage(forwarderClientId, chunk));
-    });
-
-    const cleanup = () => this.forwarderClients.delete(forwarderClientId);
-    socket.once('close', cleanup);
-    socket.once('error', cleanup);
   }
 
   async connect() {
