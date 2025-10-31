@@ -235,150 +235,51 @@ class Client {
 
   async handleMessage(message) {
     if (message.kind === 'InitiateForwarderClientReq') {
-      await this.handleInitiateForwarderClientReq({
-        forwarder_client_id: message.forwarder_client_id,
-        ip: message.ip_address,
-        port: message.port,
-      });
-
+      await this.handleInitiateForwarderClientReq(message.forwarder_client_id, message.ip_address, message.port);
     } else if (message.kind === 'InitiateForwarderClientRep') {
+      if (message.reason !== 0) {
+        const client = this.forwarderClients.get(message.forwarder_client_id);
+        if (client?.socket) client.socket.destroy();
+      }
+    } else if (message.kind === 'SendDataMessage') {
       const forwarderClient = this.forwarderClients.get(message.forwarder_client_id);
       if (!forwarderClient) return;
-
-      if (message.reason !== 0) {
-        if (forwarderClient.writer) {
-          try {
-            forwarderClient.writer.end();
-            await new Promise(res => forwarderClient.writer.once('close', res));
-          } catch {}
-        }
-        this.forwarderClients.delete(message.forwarder_client_id);
-        return;
-      }
-
-      this.stream(message.forwarder_client_id);
-
-    } else if (message.kind === 'SendDataMessage') {
-      const fc = this.forwarderClients.get(message.forwarder_client_id);
-      if (!fc) return;
-
-      if (!message.data || message.data.length === 0) {
-        try { fc.socket ? fc.socket.end() : fc.end?.(); } catch {}
-        return;
-      }
-
-      (fc.socket ? fc.socket : fc).write(message.data);
+      forwarderClient.socket.write(message.data);
     } else {
-      console.log(`[!] Received unknown message type: ${message.kind}`);
+      console.log(`Received unknown message type: ${message.type}`);
     }
   }
 
-  async handleInitiateForwarderClientReq({ forwarder_client_id, ip, port }) {
-    try {
-      const { socket, reason, bindAddress, bindPort, addressType } =
-        await this.connectTcp(ip, port, 5000);
+  async handleInitiateForwarderClientReq(forwarder_client_id, ip, port) {
+    const socket = new net.Socket();
 
-      // send rep first
-      this.sendDownstreamMessage(
-        InitiateForwarderClientRep(
-          forwarder_client_id,
-          bindAddress,
-          bindPort,
-          addressType,
-          reason
-        )
-      );
+    socket.once('connect', async () => {
+      this.forwarderClients.set(forwarder_client_id, socket);
+      const bind_address = socket.localAddress;
+      const bind_port = socket.localPort;
+      const address_type = net.isIPv4(bind_address) ? 1 : 4;
 
-      if (reason !== 0) return;
-
-      this.forwarderClients.set(forwarder_client_id, { socket });
-
-      // local -> upstream
-      socket.on('data', (chunk) => {
-        this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, chunk));
-      });
-
-      // lifecycle
-      this.stream(forwarder_client_id)
-        .catch(err => console.error('[!] Stream error:', err));
-
-    } catch (e) {
-      // if connectTcp threw (shouldn’t), fallback to general failure
-      this.sendDownstreamMessage(
-        InitiateForwarderClientRep(
-          forwarder_client_id,
-          '',
-          0,
-          0x01,
-          1
-        )
-      );
-    }
-  }
-
-  stream(forwarder_client_id) {
-    const entry = this.forwarderClients.get(forwarder_client_id);
-    const sock = entry && entry.socket ? entry.socket : entry;
-    if (!sock) return;
-
-    sock.on('data', async (chunk) => {
       await this.sendDownstreamMessage(
-        SendDataMessage(forwarder_client_id, chunk)
+        InitiateForwarderClientRep(forwarder_client_id, bind_address, bind_port, address_type, 0)
       );
     });
 
-    const ender = async () => {
-      try {
-        await this.sendDownstreamMessage(
-          SendDataMessage(forwarder_client_id, Buffer.alloc(0))
-        );
-      } finally {
-        this.forwarderClients.delete(forwarder_client_id);
-      }
-    };
-
-    sock.once('end', ender);
-    sock.once('close', ender);
-    sock.once('error', ender);
-  }
-
-  async connectTcp(host, port, timeoutMs = 5000) {
-    return new Promise((resolve) => {
-      const socket = net.connect(port, host);
-      let finished = false;
-
-      const finish = (result) => {
-        if (finished) return;
-        finished = true;
-        resolve(result);
-      };
-
-      socket.setTimeout(timeoutMs);
-
-      socket.once('connect', () => {
-        finish({
-          socket,
-          reason: 0, // success
-          bindAddress: socket.localAddress || '',
-          bindPort: socket.localPort || 0,
-          addressType: net.isIP(socket.localAddress) === 6 ? 0x04 : 0x01,
-        });
-      });
-
-      const fail = () => {
-        try { socket.destroy(); } catch {}
-        finish({
-          socket: null,
-          reason: 1, // general failure
-          bindAddress: '',
-          bindPort: 0,
-          addressType: 0x01,
-        });
-      };
-
-      socket.once('error', fail);
-      socket.once('timeout', () => fail(new Error('Connection timeout')));
+    socket.once('error', async () => {
+      await this.sendDownstreamMessage(
+        InitiateForwarderClientRep(forwarder_client_id, null, null, null, 1)
+      );
     });
+
+    socket.on('data', async (chunk) => {
+      await this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, chunk));
+    });
+
+    socket.once('close', async () => {
+      await this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, Buffer.alloc(0)));
+      this.forwarderClients.delete(forwarder_client_id);
+    });
+
+    socket.connect(port, ip);
   }
 
   async connect() {
@@ -389,7 +290,6 @@ class Client {
     throw new Error('start() not implemented by subclass');
   }
 
-  // canonical name
   sendDownstreamMessage(_message) {
     throw new Error('sendDownstreamMessage(message) not implemented by subclass');
   }
@@ -486,10 +386,10 @@ class RemotePortForwarder {
 
   async start() {
     await new Promise((resolve) => {
-      const server = net.createServer(async (socket) => {
+      const server = net.createServer((socket) => {
         const forwarder_client_id = this.randomAlphaNum(10);
 
-        this.messenger.forwarderClients.set(forwarder_client_id, { socket });
+        this.messenger.forwarderClients.set(forwarder_client_id, socket);
 
         this.messenger.sendDownstreamMessage(
           InitiateForwarderClientReq(
@@ -499,17 +399,31 @@ class RemotePortForwarder {
           )
         );
 
+        socket.on('data', async (chunk) => {
+          await this.messenger.sendDownstreamMessage(
+            SendDataMessage(forwarder_client_id, chunk)
+          );
+        });
+
+        socket.once('close', async () => {
+          await this.messenger.sendDownstreamMessage(
+            SendDataMessage(forwarder_client_id, Buffer.alloc(0))
+          );
+          this.messenger.forwarderClients.delete(forwarder_client_id);
+        });
+
         socket.on('error', () => {});
       });
 
-      server.on('listening', () => {
+      server.once('listening', () => {
         const addr = server.address();
         console.log(
           `[+] Remote Port Forwarder ${this.identifier} listening on ${addr.address}:${addr.port}`
         );
         resolve();
       });
-      server.on('error', (e) => {
+
+      server.once('error', (e) => {
         console.error(
           `${this.listening_host}:${this.listening_port} is already in use or failed:`,
           e.message
@@ -520,6 +434,7 @@ class RemotePortForwarder {
       server.listen(this.listening_port, this.listening_host);
     });
   }
+
 
   randomAlphaNum(len = 10) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
