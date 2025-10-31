@@ -41,7 +41,7 @@ the hardcoded options. Those options and their definitions are shown below.
 |-----------------------------------------------|---------------------------|-------------------------|
 | [Server URL](#server-url)                     | `--server-url`            | ws://localhost:8080     |
 | [Encryption Key](#encryption-key)             | `--encryption-key`        | None                    |
-| [User Agent](#user-agent)                     | `--user-agent`            | [Specified Here]()      | 
+| [User Agent](#user-agent)                     | `--user-agent`            | [Specified Here](https://github.com/skylerknecht/messenger-client-nodejs/blob/f3d0202723d6347590332577a5c64a198fcdf209/builder.py#L6)      | 
 | [Remote Port Forwards](#remote-port-forwards) | `--remote-port-forwards`  | None                    |
 | [Retry Duration](#retry-duration)             | `--retry-duration`        | One Minute              |
 | [Retry Attempts](#retry-attempts)             | `--retry-attempts`        | Five                    |
