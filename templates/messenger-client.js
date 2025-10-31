@@ -266,7 +266,7 @@ class Client {
 
     socket.once('error', async () => {
       await this.sendDownstreamMessage(
-        InitiateForwarderClientRep(forwarder_client_id, null, null, null, 1)
+        InitiateForwarderClientRep(forwarder_client_id, '0.0.0.0', 0, 1, 1)
       );
     });
 
