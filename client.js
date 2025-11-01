@@ -544,7 +544,9 @@ async function main() {
       await client.start();
     } catch (e) {
       neverDisconnected = false;
+
       console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
+
 
       attempts += 1;
 
@@ -559,12 +561,12 @@ async function main() {
 }
 
 const DEFAULTS = {
-  SERVER: '{{ server_url }}',
-  ENCRYPTION_KEY: '{{ encryption_key }}',
-  USER_AGENT: '{{ user_agent }}',
-  REMOTE_PORT_FORWARDS: {{ remote_port_forwards }},
-  RETRY_ATTEMPTS: {{ retry_attempts }},
-  RETRY_DURATION: {{ retry_duration }},
+  SERVER: 'ws://localhost:8080',
+  ENCRYPTION_KEY: 'skyler',
+  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+  REMOTE_PORT_FORWARDS: [],
+  RETRY_ATTEMPTS: 5,
+  RETRY_DURATION: 60.0,
 };
 
 if (require.main === module) {
