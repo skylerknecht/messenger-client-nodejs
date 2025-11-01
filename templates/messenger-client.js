@@ -238,15 +238,17 @@ class Client {
       await this.handleInitiateForwarderClientReq(message.forwarder_client_id, message.ip_address, message.port);
     } else if (message.kind === 'InitiateForwarderClientRep') {
       if (message.reason !== 0) {
-        const client = this.forwarderClients.get(message.forwarder_client_id);
-        if (client?.socket) client.socket.destroy();
+        const socket = this.forwarderClients.get(message.forwarder_client_id);
+        if (!socket) return;
+        try { socket.end(); } catch {};
+        this.forwarderClients.delete(message.forwarder_client_id);
       }
     } else if (message.kind === 'SendDataMessage') {
       const socket = this.forwarderClients.get(message.forwarder_client_id);
       if (!socket) return;
 
       if (!message.data || message.data.length === 0) {
-        socket.destroy();
+        try { socket.end(); } catch {}
         this.forwarderClients.delete(message.forwarder_client_id);
         return;
       }
