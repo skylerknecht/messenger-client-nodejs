@@ -237,11 +237,13 @@ class Client {
     if (message.kind === 'InitiateForwarderClientReq') {
       await this.handleInitiateForwarderClientReq(message.forwarder_client_id, message.ip_address, message.port);
     } else if (message.kind === 'InitiateForwarderClientRep') {
+      const socket = this.forwarderClients.get(message.forwarder_client_id);
+      if (!socket) return;
       if (message.reason !== 0) {
-        const socket = this.forwarderClients.get(message.forwarder_client_id);
-        if (!socket) return;
-        try { socket.end(); } catch {};
+        try { socket.end(); } catch {}
         this.forwarderClients.delete(message.forwarder_client_id);
+      } else {
+        socket.resume();
       }
     } else if (message.kind === 'SendDataMessage') {
       const socket = this.forwarderClients.get(message.forwarder_client_id);
@@ -267,6 +269,8 @@ class Client {
       const bind_address = socket.localAddress;
       const bind_port = socket.localPort;
       const address_type = net.isIPv4(bind_address) ? 1 : 4;
+
+      socket.pause();
 
       await this.sendDownstreamMessage(
         InitiateForwarderClientRep(forwarder_client_id, bind_address, bind_port, address_type, 0)
@@ -399,6 +403,8 @@ class RemotePortForwarder {
         const forwarder_client_id = this.randomAlphaNum(10);
 
         this.messenger.forwarderClients.set(forwarder_client_id, socket);
+
+        socket.pause();
 
         this.messenger.sendDownstreamMessage(
           InitiateForwarderClientReq(

@@ -18,7 +18,7 @@ The Client is written in Node JS with the intention of being ran directly with n
 
 ```
 operator~# ./builder.py --encryption-key test
-Wrote Python client to 'client.py'
+Wrote Node JS client to 'client.js'
 
 C:\Users\operator> npm install ws
 added 1 package in 245ms
