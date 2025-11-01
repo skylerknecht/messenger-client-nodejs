@@ -270,8 +270,6 @@ class Client {
       const bind_port = socket.localPort;
       const address_type = net.isIPv4(bind_address) ? 1 : 4;
 
-      socket.pause();
-
       await this.sendDownstreamMessage(
         InitiateForwarderClientRep(forwarder_client_id, bind_address, bind_port, address_type, 0)
       );
