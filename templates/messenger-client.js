@@ -4,12 +4,12 @@ const net = require('net');
 const http = require('http');
 const https = require('https');
 
-let ws = false;
+let wsImported = false;
 try {
   WebSocket = require('ws');
 } catch {
   console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
-  ws = false;
+  wsImported = false;
 }
 /* AES */
 
@@ -636,7 +636,7 @@ async function main() {
   }
   encryptionKey = sha256Bytes(encryptionKey);
   const userAgent = args.userAgent || DEFAULTS.USER_AGENT;
-  const remotePortForwards = Array.isArray(args.remotePortForwards)
+  const remotePortForwards = Array.isArray(args.remotePortForwards) && args.remotePortForwards.length > 0
     ? args.remotePortForwards
     : DEFAULTS.REMOTE_PORT_FORWARDS;
 
@@ -664,7 +664,7 @@ async function main() {
   for (const attempt of attempts) {
     const candidateUrl = `${attempt}://${remainder}/`;
     try {
-      if (attempt.includes('ws') && WebSocket) {
+      if (attempt.includes('ws') && wsImported) {
         console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
         client = new WSClient(candidateUrl, encryptionKey, userAgent);
       } else if (attempt.includes('http')) {
