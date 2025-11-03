@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const assert = require('assert');
 const net = require('net');
-const { Agent } = require('undici');
+const http = require('http');
+const https = require('https');
 
 let ws = false;
 try {
@@ -390,38 +391,46 @@ class HTTPClient extends Client {
     this.identifier = '';
     this.downstream_messages = [];
     this._timeoutMs = 10000; // default per request
-    this.tlsAgent = new Agent({
-      connect: { rejectUnauthorized: false }   // ← accept all certs
-    });
   }
 
   async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
+    const u = new URL(url);
+    const isHttps = u.protocol === 'https:';
 
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Accept': 'application/octet-stream',
-          'User-Agent': this.headers['User-Agent']
-        },
-        body: bodyBytes,          // Buffer | Uint8Array | ArrayBuffer
-        signal: controller.signal,
-        dispatcher: this.tlsAgent
+    const agent = isHttps
+      ? new https.Agent({ rejectUnauthorized: false }) // accept self-signed certs (scoped to this client)
+      : new http.Agent();
+
+    const options = {
+      method: 'POST',
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Accept': 'application/octet-stream',
+        'User-Agent': this.headers['User-Agent'],
+        'Content-Length': Buffer.byteLength(bodyBytes),
+      },
+      agent,
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? https : http).request(options, (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          // drain and error
+          res.resume();
+          return reject(new Error(`HTTP ${res.statusCode} ${res.statusMessage}`));
+        }
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
       });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      }
-      const ab = await res.arrayBuffer();
-      return Buffer.from(ab);
-    } catch (err) {
-      if (err?.name === 'AbortError') throw new Error('Request timed out');
-      throw err;
-    } finally {
-      clearTimeout(t);
-    }
+
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('Request timed out')));
+      req.on('error', reject);
+      req.end(bodyBytes);
+    });
   }
 
   async connect() {
