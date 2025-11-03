@@ -671,8 +671,8 @@ async function main() {
         console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
-        console.log('[*] No suitable clients identified, shutting down.');
-        process.exit(0);
+        console.log(`[!] Unknown scheme ${attempt.toUpperCase()}`);
+        continue;
       }
 
       await client.connect();
