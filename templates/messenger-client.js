@@ -676,8 +676,8 @@ async function main() {
       }
 
       await client.connect();
-      connected = true;
       console.log(`[+] Connected to ${candidateUrl}`);
+      connected = true;
       break; // success
     } catch (e) {
       console.error(`[!] Failed to connect to ${candidateUrl}: ${e?.message || e}`);
@@ -715,9 +715,7 @@ async function main() {
     await sleep(sleepTime * 1000);
     try {
       await client.connect();
-      for (const rf of remoteForwards) {
-        rf.messenger = client;
-      }
+      console.log(`[+] Reconnected to ${candidateUrl}`);
       attemptsCount = 0;
       await client.start();
     } catch (e) {
@@ -726,6 +724,7 @@ async function main() {
       console.log(`[+] Attempting to reconnect (attempt #${attemptsCount}/${retryAttempts})`);
     }
   }
+  process.exit(0);
 }
 
 const DEFAULTS = {
