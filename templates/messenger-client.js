@@ -9,7 +9,7 @@ try {
   WebSocket = require('ws');
 } catch {
   console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
-  wsImported = false;
+  wsImported = true;
 }
 /* AES */
 
