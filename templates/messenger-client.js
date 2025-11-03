@@ -7,9 +7,9 @@ const https = require('https');
 let wsImported = false;
 try {
   WebSocket = require('ws');
+  wsImported = true;
 } catch {
   console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
-  wsImported = true;
 }
 /* AES */
 
