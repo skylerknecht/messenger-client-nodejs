@@ -444,6 +444,10 @@ class HTTPClient extends Client {
       throw new Error(`Connect POST failed: ${e.message}`);
     }
 
+    if (this.identifier) {
+      return;
+    }
+
     // Parse server response and extract assigned messenger_id
     try {
       const messages = this.deserializeMessages(resp);
