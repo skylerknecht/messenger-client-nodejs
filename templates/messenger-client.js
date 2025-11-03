@@ -671,7 +671,7 @@ async function main() {
         console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
-        console.log(`[!] Unknown scheme ${attempt.toUpperCase()}`);
+        console.log(`[!] Unsupported scheme ${attempt.toUpperCase()}`);
         continue;
       }
 
