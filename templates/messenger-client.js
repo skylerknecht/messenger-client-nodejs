@@ -715,7 +715,7 @@ async function main() {
     await sleep(sleepTime * 1000);
     try {
       await client.connect();
-      console.log(`[+] Reconnected to ${candidateUrl}`);
+      console.log(`[+] Reconnected`);
       attemptsCount = 0;
       await client.start();
     } catch (e) {
