@@ -1,8 +1,14 @@
 const crypto = require('crypto');
-const WebSocket = require('ws');
 const assert = require('assert');
 const net = require('net');
+let ws = false;
 
+try {
+  WebSocket = require('ws');
+} catch {
+  console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
+  ws = false;
+}
 /* AES */
 
 function encrypt(key, plaintext) {
@@ -202,8 +208,7 @@ class MessageBuilder {
 /* CLIENT */
 
 class Client {
-  constructor(serverUrl, encryptionKey, userAgent) {
-    this.serverUrl = serverUrl;
+  constructor(encryptionKey, userAgent) {
     this.encryptionKey = encryptionKey;
     this.headers = { 'User-Agent': userAgent };
     this.identifier = '';
@@ -310,7 +315,8 @@ class Client {
 class WSClient extends Client {
 
   constructor(serverUrl, encryptionKey, userAgent) {
-    super(serverUrl, encryptionKey, userAgent);
+    super(encryptionKey, userAgent);
+    this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '').replace(/^ws/, 'http') + '/socketio/?EIO=4&transport=websocket';
     this.ws = null;
     this.wsOptions = {
       headers: this.headers,
@@ -373,6 +379,114 @@ class WSClient extends Client {
     const downstream_messages = [CheckInMessage(this.identifier), downstream_message];
     const payload = this.serializeMessages(downstream_messages);
     this.ws.send(payload);
+  }
+}
+
+class HTTPClient extends Client {
+  constructor(serverUrl, encryptionKey, userAgent) {
+    super(encryptionKey, userAgent);
+    this.serverUrl = String(serverUrl).replace(/\/+$/g, '') + '/socketio/?EIO=4&transport=polling';
+    this.identifier = '';
+    this.downstream_messages = [];
+    this._timeoutMs = 10000; // default per request
+  }
+
+  async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Accept': 'application/octet-stream',
+          'User-Agent': this.headers['User-Agent']
+        },
+        body: bodyBytes,          // Buffer | Uint8Array | ArrayBuffer
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    } catch (err) {
+      if (err?.name === 'AbortError') throw new Error('Request timed out');
+      throw err;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  async connect() {
+    // Send initial CheckIn (identifier may be empty on first connect)
+    const payload = this.serializeMessages([CheckInMessage(this.identifier)]);
+
+    let resp;
+    try {
+      resp = await this._postBinary(this.serverUrl, payload, 10000);
+    } catch (e) {
+      throw new Error(`Connect POST failed: ${e.message}`);
+    }
+
+    // Parse server response and extract assigned messenger_id
+    try {
+      const messages = this.deserializeMessages(resp);
+      if (!messages.length) throw new Error('Empty response');
+      const msg0 = messages[0];
+      if (msg0.kind !== 'CheckInMessage') {
+        throw new Error(`Expected CheckInMessage, got ${msg0.kind}`);
+      }
+      this.identifier = msg0.messenger_id;
+    } catch (e) {
+      // Bad key / decrypt error typically lands here
+      throw new Error(`Failed to parse connect response: ${e.message}`);
+    }
+  }
+
+  async start() {
+    // Long-poll loop: post CheckIn + up to 5 queued messages; handle any replies
+    while (true) {
+      const toSend = [CheckInMessage(this.identifier)];
+      for (let i = 0; i < 5 && this.downstream_messages.length > 0; i++) {
+        toSend.push(this.downstream_messages.shift());
+      }
+
+      const payload = this.serializeMessages(toSend);
+
+      let resp;
+      try {
+        resp = await this._postBinary(this.serverUrl, payload, 15000);
+      } catch (e) {
+        throw new Error(`HTTP poll failed: ${e.message}`);
+      }
+
+      if (!resp || resp.length === 0) {
+        await new Promise(r => setTimeout(r, 100));
+        continue;
+      }
+
+      // Deserialize and dispatch messages
+      try {
+        const messages = this.deserializeMessages(resp);
+        for (const m of messages) {
+          try {
+            await this.handleMessage(m);
+          } catch (handlerErr) {
+            // Non-fatal: keep polling
+            console.error('[!] handler error:', handlerErr.message);
+          }
+        }
+      } catch (e) {
+        // Decrypt/parse issues bubble out so caller can retry
+        throw new Error(`Failed to deserialize server response: ${e.message}`);
+      }
+    }
+  }
+
+  async sendDownstreamMessage(downstream_message) {
+    this.downstream_messages.push(downstream_message);
   }
 }
 
@@ -471,7 +585,6 @@ function parseArgs(argv) {
     server: null,
     encryptionKey: null,
     userAgent: null,
-    proxy: null,
     remotePortForwards: [],
     retryAttempts: null,
     retryDuration: null,
@@ -501,63 +614,102 @@ function sleep(ms) {
 async function main() {
   const args = parseArgs(process.argv);
 
-  const base = (args.serverUrl || DEFAULTS.SERVER).replace(/\/+$/, '');
-  let serverUrl = `${base}/socketio/?EIO=4&transport=websocket`;
-
-  try {
-    const u = new URL(serverUrl);
-    if (u.protocol === 'http:') u.protocol = 'ws:';
-    if (u.protocol === 'https:') u.protocol = 'wss:';
-    serverUrl = u.toString();
-  } catch {}
-
-  const encryptionKey = sha256Bytes(args.encryptionKey || DEFAULTS.ENCRYPTION_KEY);
+  const serverUrl = args.serverUrl || DEFAULTS.SERVER;
+  let encryptionKey = args.encryptionKey || DEFAULTS.ENCRYPTION_KEY;
+  if (!encryptionKey) {
+    console.error('[!] No encryption key provided, please specify `--encryption-key`');
+    process.exit(0);
+  }
+  encryptionKey = sha256Bytes(encryptionKey);
   const userAgent = args.userAgent || DEFAULTS.USER_AGENT;
-  const remotePortForwards =
-    args.remotePortForwards && args.remotePortForwards.length
-      ? args.remotePortForwards
-      : DEFAULTS.REMOTE_PORT_FORWARDS;
-
-  const retryAttempts = Number.isInteger(args.retryAttempts)
-    ? args.retryAttempts
-    : Number(DEFAULTS.RETRY_ATTEMPTS);
+  const remotePortForwards = Array.isArray(args.remotePortForwards)
+    ? args.remotePortForwards
+    : DEFAULTS.REMOTE_PORT_FORWARDS;
 
   const retryDuration = Number.isFinite(args.retryDuration)
     ? args.retryDuration
     : Number(DEFAULTS.RETRY_DURATION);
 
-  const client = new WSClient(serverUrl, encryptionKey, userAgent);
+  const retryAttempts = Number.isInteger(args.retryAttempts)
+    ? args.retryAttempts
+    : Number(DEFAULTS.RETRY_ATTEMPTS);
 
-  const remoteForwards = (remotePortForwards || []).map(cfg => new RemotePortForwarder(client, cfg));
-  await Promise.all(remoteForwards.map(rf => rf.start()));
+  let remainder = serverUrl;
+  let attempts;
+  if (serverUrl.includes('://')) {
+    const parts = serverUrl.split('://', 2);
+    const scheme = parts[0];
+    remainder = parts[1];
+    attempts = scheme.split('+');
+  } else {
+    attempts = ['ws', 'wss', 'http', 'https'];
+  }
 
-  let attempts = 0;
-  let neverDisconnected = true;
-
-  const sleepTimeMs = retryAttempts > 0 ? Math.floor((retryDuration * 1000) / retryAttempts) : 0;
-
-  while (neverDisconnected || attempts < retryAttempts) {
-    if (!neverDisconnected) {
-      await sleep(sleepTimeMs);
-    }
-
+  let client = null;
+  let connected = false;
+  for (const attempt of attempts) {
+    const candidateUrl = `${attempt}://${remainder}/`;
     try {
-      await client.connect();
-      console.log(`[+] Connected to ${serverUrl}`);
-      attempts = 0;
-      await client.start();
-    } catch (e) {
-      neverDisconnected = false;
-      console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
-
-      attempts += 1;
-
-      if (retryAttempts === 0) {
-        console.log('[*] Retry attempts set to zero, exiting.');
+      if (attempt.includes('ws') && WebSocket) {
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        client = new WSClient(candidateUrl, encryptionKey, userAgent);
+      } else if (attempt.includes('http')) {
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
+      } else {
+        console.log('[*] No suitable clients identified, shutting down.');
         process.exit(0);
       }
 
-      console.log(`[*] Attempting to reconnect (attempt #${attempts}/${retryAttempts})`);
+      await client.connect();
+      connected = true;
+      console.log(`[+] Connected to ${candidateUrl}`);
+      break; // success
+    } catch (e) {
+      console.error(`[!] Failed to connect to ${candidateUrl}: ${e?.message || e}`);
+      client = null;
+    }
+  }
+
+  if (!connected){
+    console.log('[*] No suitable clients identified, shutting down.');
+    process.exit(0);
+  }
+
+  const remoteForwards = [];
+  for (const cfg of (remotePortForwards || [])) {
+    const rf = new RemotePortForwarder(client, cfg);
+    await rf.start();
+    remoteForwards.push(rf);
+  }
+
+  try {
+    await client.start();
+  } catch (e) {
+    console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
+  }
+
+  if (!(retryAttempts > 0)) {
+    console.log('[*] Retry attempts set to zero, exiting.');
+    process.exit(0);
+  }
+
+  let attemptsCount = 0;
+  const sleepTime = retryDuration / retryAttempts;
+
+  while (attemptsCount < retryAttempts) {
+    await sleep(sleepTime * 1000);
+    try {
+      await client.connect();
+      for (const rf of remoteForwards) {
+        rf.messenger = client;
+      }
+      attemptsCount = 0;
+      await client.start();
+    } catch (e) {
+      console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
+      attemptsCount += 1;
+      console.log(`[+] Attempting to reconnect (attempt #${attemptsCount}/${retryAttempts})`);
     }
   }
 }
