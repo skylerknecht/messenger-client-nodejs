@@ -1,8 +1,9 @@
 const crypto = require('crypto');
 const assert = require('assert');
 const net = require('net');
-let ws = false;
+const { Agent } = require('undici');
 
+let ws = false;
 try {
   WebSocket = require('ws');
 } catch {
@@ -316,7 +317,7 @@ class WSClient extends Client {
 
   constructor(serverUrl, encryptionKey, userAgent) {
     super(encryptionKey, userAgent);
-    this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '').replace(/^ws/, 'http') + '/socketio/?EIO=4&transport=websocket';
+    this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '') + '/socketio/?EIO=4&transport=websocket';
     this.ws = null;
     this.wsOptions = {
       headers: this.headers,
@@ -389,6 +390,9 @@ class HTTPClient extends Client {
     this.identifier = '';
     this.downstream_messages = [];
     this._timeoutMs = 10000; // default per request
+    this.tlsAgent = new Agent({
+      connect: { rejectUnauthorized: false }   // ← accept all certs
+    });
   }
 
   async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
@@ -405,6 +409,7 @@ class HTTPClient extends Client {
         },
         body: bodyBytes,          // Buffer | Uint8Array | ArrayBuffer
         signal: controller.signal,
+        dispatcher: this.tlsAgent
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
