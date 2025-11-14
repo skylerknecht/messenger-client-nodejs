@@ -368,8 +368,14 @@ class WSClient extends Client {
     });
 
     return new Promise((resolve, reject) => {
-      this.ws.once('close', (code, reason) => resolve({ code, reason }));
-      this.ws.once('error', reject);
+      this.ws.once('close', (code, reason) => {
+        console.log(`[*] Websocket Closed: code=${code}, reason=${reason ? reason.toString('utf8') : ''}`);
+        resolve({ code, reason });
+      });
+
+      this.ws.once('error', (err) => {
+        reject(err);
+      });
     });
   }
 
@@ -712,12 +718,13 @@ async function main() {
     process.exit(0);
   }
 
-  let attemptsCount = 0;
+  let attemptsCount = 1;
   const sleepTime = retryDuration / retryAttempts;
 
-  while (attemptsCount < retryAttempts) {
+  while (attemptsCount <= retryAttempts) {
     await sleep(sleepTime * 1000);
     try {
+      console.log(`[*] Attempting to reconnect (attempt #${attemptsCount}/${retryAttempts})`);
       await client.connect();
       console.log(`[+] Reconnected`);
       attemptsCount = 0;
@@ -725,7 +732,6 @@ async function main() {
     } catch (e) {
       console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
       attemptsCount += 1;
-      console.log(`[+] Attempting to reconnect (attempt #${attemptsCount}/${retryAttempts})`);
     }
   }
   process.exit(0);
