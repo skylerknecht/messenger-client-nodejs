@@ -722,17 +722,17 @@ async function main() {
   const sleepTime = retryDuration / retryAttempts;
 
   while (attemptsCount <= retryAttempts) {
-    await sleep(sleepTime * 1000);
     try {
       console.log(`[*] Attempting to reconnect (attempt #${attemptsCount}/${retryAttempts})`);
       await client.connect();
       console.log(`[+] Reconnected`);
-      attemptsCount = 0;
+      attemptsCount = 1;
       await client.start();
     } catch (e) {
       console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
       attemptsCount += 1;
     }
+    await sleep(sleepTime * 1000);
   }
   process.exit(0);
 }
