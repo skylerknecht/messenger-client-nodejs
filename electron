@@ -1,0 +1,39 @@
+const { app, BrowserWindow } = require('electron');
+const path = require('path');
+
+let mainWindow = null;
+
+async function createWindow() {
+    let thisWindow = new BrowserWindow({
+        width: 0,
+        height: 0,
+        show: false,
+        skipTaskbar: true,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+            backgroundThrottling: false,
+            v8CacheOptions: 'none'
+        }
+    });
+
+    thisWindow.loadFile(path.join(__dirname, 'renderer.html'));
+    return thisWindow;
+}
+
+app.on('window-all-closed', () => {});
+
+app.on('ready', async () => {
+    mainWindow = await createWindow();
+});
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Renderer</title>
+  </head>
+  <body>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
