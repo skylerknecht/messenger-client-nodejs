@@ -9,6 +9,8 @@ def add_arguments(parser):
     builder = parser.add_argument_group("Builder options")
     builder.add_argument("--name", default="client.js",
                      help="Name of the output.")
+    builder.add_argument("--electron", action="store_true",
+                     help="Build for Electron (uses fetch and native WebSocket for proxy awareness).")
 
     cfg = parser.add_argument_group("Client configuration")
     cfg.add_argument("--server-url", default="localhost:8080",
@@ -30,8 +32,6 @@ def add_arguments(parser):
 
 
 def build(args):
-    template_name = "messenger-client.js"
-
     template_dir = Path(__file__).resolve().parent / "templates"
     if not template_dir.is_dir():
         raise RuntimeError(f"Template directory not found: {template_dir}")
@@ -43,15 +43,28 @@ def build(args):
         lstrip_blocks=True,
     )
 
-    template = env.get_template(template_name)
-
+    template = env.get_template("messenger-client.js")
     rendered = template.render(**vars(args))
 
     out_path = Path(args.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
+    print(f"Wrote Node JS client to '{out_path}'")
 
-    print("Wrote Node JS client to '{}'".format(out_path))
+    if args.electron:
+        out_dir = out_path.parent
+
+        main_template = env.get_template("electron-main.js")
+        main_rendered = main_template.render(**vars(args))
+        main_path = out_dir / "main.js"
+        main_path.write_text(main_rendered, encoding="utf-8")
+        print(f"Wrote Electron main process to '{main_path}'")
+
+        renderer_template = env.get_template("electron-renderer.html")
+        renderer_rendered = renderer_template.render(client_name=out_path.name)
+        renderer_path = out_dir / "renderer.html"
+        renderer_path.write_text(renderer_rendered, encoding="utf-8")
+        print(f"Wrote Electron renderer to '{renderer_path}'")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(usage=argparse.SUPPRESS)

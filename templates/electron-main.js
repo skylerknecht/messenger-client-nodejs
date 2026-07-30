@@ -1,9 +1,18 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, session } = require('electron');
 const path = require('path');
+
+const USER_AGENT = '{{ user_agent }}';
+
+app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+    event.preventDefault();
+    callback(true);
+});
 
 let mainWindow = null;
 
 async function createWindow() {
+    session.defaultSession.setUserAgent(USER_AGENT);
+
     let thisWindow = new BrowserWindow({
         width: 0,
         height: 0,
@@ -26,14 +35,3 @@ app.on('window-all-closed', () => {});
 app.on('ready', async () => {
     mainWindow = await createWindow();
 });
-
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Renderer</title>
-  </head>
-  <body>
-    <script src="./renderer.js"></script>
-  </body>
-</html>
