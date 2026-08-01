@@ -7,7 +7,7 @@ const https = require('https');
 
 let wsImported = false;
 try {
-  WebSocket = require('ws');
+  var WebSocket = require('ws');
   wsImported = true;
 } catch {
   console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
@@ -98,6 +98,7 @@ class MessageParser {
     const [message_type, afterType] = MessageParser.readUint32(data);
     const [message_length, afterLen] = MessageParser.readUint32(afterType);
     const payload_len = message_length - 8;
+    if (payload_len < 0) throw new Error('Invalid message length');
     if (afterLen.length < payload_len) throw new Error('Not enough bytes in data for the payload');
     const payload = afterLen.subarray(0, payload_len);
     const leftover = afterLen.subarray(payload_len);
@@ -249,6 +250,7 @@ class Client {
       const socket = this.forwarderClients.get(message.forwarder_client_id);
       if (!socket) return;
       if (message.reason !== 0) {
+        socket._serverClosed = true;
         try { socket.end(); } catch {}
         this.forwarderClients.delete(message.forwarder_client_id);
       } else {
@@ -259,6 +261,7 @@ class Client {
       if (!socket) return;
 
       if (!message.data || message.data.length === 0) {
+        socket._serverClosed = true;
         try { socket.end(); } catch {}
         this.forwarderClients.delete(message.forwarder_client_id);
         return;
@@ -266,14 +269,21 @@ class Client {
 
       socket.write(message.data);
     } else {
-      console.log(`Received unknown message type: ${message.type}`);
+      console.log(`Received unknown message type: ${message.kind}`);
     }
   }
 
   async handleInitiateForwarderClientReq(forwarder_client_id, ip, port) {
     const socket = new net.Socket();
 
+    const onError = async () => {
+      await this.sendDownstreamMessage(
+        InitiateForwarderClientRep(forwarder_client_id, '0.0.0.0', 0, 1, 1)
+      );
+    };
+
     socket.once('connect', async () => {
+      socket.removeListener('error', onError);
       this.forwarderClients.set(forwarder_client_id, socket);
       const bind_address = socket.localAddress;
       const bind_port = socket.localPort;
@@ -284,18 +294,16 @@ class Client {
       );
     });
 
-    socket.once('error', async () => {
-      await this.sendDownstreamMessage(
-        InitiateForwarderClientRep(forwarder_client_id, '0.0.0.0', 0, 1, 1)
-      );
-    });
+    socket.once('error', onError);
 
     socket.on('data', async (chunk) => {
       await this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, chunk));
     });
 
     socket.once('close', async () => {
-      await this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, Buffer.alloc(0)));
+      if (!socket._serverClosed) {
+        await this.sendDownstreamMessage(SendDataMessage(forwarder_client_id, Buffer.alloc(0)));
+      }
       this.forwarderClients.delete(forwarder_client_id);
     });
 
@@ -320,7 +328,7 @@ class WSClient extends Client {
 
   constructor(serverUrl, encryptionKey, userAgent) {
     super(encryptionKey, userAgent);
-    this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '') + '/socketio/?EIO=4&transport=websocket';
+    this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '');
     this.ws = null;
 {% if not electron %}
     this.wsOptions = {
@@ -369,16 +377,20 @@ class WSClient extends Client {
   }
 
   async start() {
-    while (this.downstream_messages.length > 0) {
+    while (this.downstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
       const msg = this.downstream_messages.shift();
       this.sendDownstreamMessage(msg);
     }
 
     this.ws.addEventListener('message', async (e) => {
-      const buf = Buffer.from(e.data);
-      const messages = this.deserializeMessages(buf);
-      for (const msg of messages) {
-        await this.handleMessage(msg);
+      try {
+        const buf = Buffer.from(e.data);
+        const messages = this.deserializeMessages(buf);
+        for (const msg of messages) {
+          await this.handleMessage(msg);
+        }
+      } catch (err) {
+        console.error('[!] handler error:', err.message);
       }
     });
 
@@ -408,10 +420,16 @@ class WSClient extends Client {
 class HTTPClient extends Client {
   constructor(serverUrl, encryptionKey, userAgent) {
     super(encryptionKey, userAgent);
-    this.serverUrl = String(serverUrl).replace(/\/+$/g, '') + '/socketio/?EIO=4&transport=polling';
+    this.serverUrl = String(serverUrl).replace(/\/+$/g, '');
     this.identifier = '';
     this.downstream_messages = [];
     this._timeoutMs = 10000; // default per request
+{% if not electron %}
+    const isHttps = this.serverUrl.startsWith('https');
+    this._agent = isHttps
+      ? new https.Agent({ rejectUnauthorized: false })
+      : new http.Agent();
+{% endif %}
   }
 
   async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
@@ -440,10 +458,6 @@ class HTTPClient extends Client {
     const u = new URL(url);
     const isHttps = u.protocol === 'https:';
 
-    const agent = isHttps
-      ? new https.Agent({ rejectUnauthorized: false })
-      : new http.Agent();
-
     const options = {
       method: 'POST',
       hostname: u.hostname,
@@ -455,7 +469,7 @@ class HTTPClient extends Client {
         'User-Agent': this.headers['User-Agent'],
         'Content-Length': Buffer.byteLength(bodyBytes),
       },
-      agent,
+      agent: this._agent,
     };
 
     return new Promise((resolve, reject) => {
@@ -594,9 +608,11 @@ class RemotePortForwarder {
         });
 
         socket.once('close', async () => {
-          await this.messenger.sendDownstreamMessage(
-            SendDataMessage(forwarder_client_id, Buffer.alloc(0))
-          );
+          if (!socket._serverClosed) {
+            await this.messenger.sendDownstreamMessage(
+              SendDataMessage(forwarder_client_id, Buffer.alloc(0))
+            );
+          }
           this.messenger.forwarderClients.delete(forwarder_client_id);
         });
 
@@ -613,10 +629,10 @@ class RemotePortForwarder {
 
       server.once('error', (e) => {
         console.error(
-          `${this.listening_host}:${this.listening_port} is already in use or failed:`,
+          `[!] ${this.listening_host}:${this.listening_port} is already in use or failed:`,
           e.message
         );
-        resolve();
+        reject(e);
       });
 
       server.listen(this.listening_port, this.listening_host);
@@ -744,14 +760,17 @@ async function main() {
   const remoteForwards = [];
   for (const cfg of (remotePortForwards || [])) {
     const rf = new RemotePortForwarder(client, cfg);
-    await rf.start();
-    remoteForwards.push(rf);
+    try {
+      await rf.start();
+      remoteForwards.push(rf);
+    } catch {}
   }
 
   try {
     await client.start();
   } catch (e) {
-    console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
+    const loc = e.stack ? e.stack.split('\n')[1]?.trim() : '';
+    console.error(`[!] ${e.name}: ${e.message}${loc ? ' at ' + loc : ''}`);
   }
 
   if (!(retryAttempts > 0)) {
@@ -770,7 +789,8 @@ async function main() {
       attemptsCount = 1;
       await client.start();
     } catch (e) {
-      console.error(`[!] ${e.name}: ${e.message} at ${e.stack.split('\n')[1].trim()}`);
+      const loc = e.stack ? e.stack.split('\n')[1]?.trim() : '';
+      console.error(`[!] ${e.name}: ${e.message}${loc ? ' at ' + loc : ''}`);
       attemptsCount += 1;
     }
     await sleep(sleepTime * 1000);
