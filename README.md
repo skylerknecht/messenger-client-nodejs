@@ -2,17 +2,23 @@
 
 ## Overview
 
-The Client is written in Node JS with the intention of being ran directly with node or dropped into an electron app. 
+The Client is written in Node JS with the intention of being ran directly with node or dropped into an Electron app.
 
 ## Primary Capabilities
 
 | Capability                 | Support Status                                         |
 |----------------------------|--------------------------------------------------------|
-| Transports                 | WebSockets                                             |
+| Transports                 | HTTP and WebSockets                                    |
 | Encryption                 | AES-256-CBC with random IV prefix.                     |
 | Reconnection procedure     | Defaults to five (5) attempts over sixty (60) seconds. |
 | SOCKS5 TCP                 | Supported                                              |
 | SOCKS5 UDP                 | Not Supported                                          |
+
+## Client-Specific Capabilities
+
+| Capability                    | Support Status                                                                                          |
+|-------------------------------|---------------------------------------------------------------------------------------------------------|
+| Electron Support              | Provide `--electron` to the builder script to generate an Electron-compatible client with proxy support. |
 
 ## Quick Start
 
@@ -24,28 +30,29 @@ C:\Users\operator> npm install ws
 added 1 package in 245ms
 
 C:\Users\operator> node client.js
-[+] Connected to http://localhost:8080/socketio/?EIO=4&transport=websocket
+[+] Connected to ws://localhost:8080/
 ```
 
 ## Usage
 
 To build the client, execute `builder.py` or `messenger-builder` from the [Messenger Repository](https://github.com/skylerknecht/messenger).
 
-Both scripts accept the same options and will generate a Python Messenger Client. If provided options, the builder scripts
+Both scripts accept the same options and will generate a Node JS Messenger Client. If provided options, the builder scripts
 will hard-code the options into the script. Once built, the operator can specify command-line arguments that will override
 the hardcoded options. Those options and their definitions are shown below. 
 
 ## Client Options
 
-| Option                                        | Flag                      | Default Value           |
-|-----------------------------------------------|---------------------------|-------------------------|
-| [Server URL](#server-url)                     | `--server-url`            | ws://localhost:8080     |
-| [Encryption Key](#encryption-key)             | `--encryption-key`        | None                    |
-| [User Agent](#user-agent)                     | `--user-agent`            | [Specified Here](https://github.com/skylerknecht/messenger-client-nodejs/blob/f3d0202723d6347590332577a5c64a198fcdf209/builder.py#L6)      | 
-| [Remote Port Forwards](#remote-port-forwards) | `--remote-port-forwards`  | None                    |
-| [Retry Duration](#retry-duration)             | `--retry-duration`        | One Minute              |
-| [Retry Attempts](#retry-attempts)             | `--retry-attempts`        | Five                    |
-| [Name](#name)                                 | `--name`                  | client.py               |
+| Option                                        | Flag                      | Default Value          |
+|-----------------------------------------------|---------------------------|------------------------|
+| [Server URL](#server-url)                     | `--server-url`            | localhost:8080         |
+| [Encryption Key](#encryption-key)             | `--encryption-key`        | None                   |
+| [User Agent](#user-agent)                     | `--user-agent`            | [Specified Here](https://github.com/skylerknecht/messenger-client-nodejs/blob/main/builder.py#L6) |
+| [Messenger ID](#messenger-id)                 | `--messenger-id`          | None                   |
+| [Remote Port Forwards](#remote-port-forwards) | `--remote-port-forwards`  | None                   |
+| [Retry Duration](#retry-duration)             | `--retry-duration`        | One Minute             |
+| [Retry Attempts](#retry-attempts)             | `--retry-attempts`        | Five                   |
+| [Name](#name)                                 | `--name`                  | client.js              |
 
 ### Server URL
 
@@ -80,6 +87,14 @@ For HTTP-based protocols, the operator can control the user-agent header.
 
 ```
 builder.py --user-agent "Test User Agent"
+```
+
+#### Messenger ID
+
+Operators can hardcode a messenger ID into the client. If not provided, the client will generate a random ID.
+
+```
+builder.py --messenger-id my-messenger
 ```
 
 #### Remote Port Forwards
@@ -123,5 +138,5 @@ builder.py --retry-attempts 100
 The build process outputs an artifact, and operators can control its name.
 
 ```
-builder.py --name output.py
+builder.py --name output.js
 ```
