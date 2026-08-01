@@ -276,9 +276,21 @@ class Client {
   async handleInitiateForwarderClientReq(forwarder_client_id, ip, port) {
     const socket = new net.Socket();
 
-    const onError = async () => {
+    const errorToReason = (err) => {
+      if (!err || !err.code) return 1;
+      switch (err.code) {
+        case 'ENETUNREACH': return 3;
+        case 'EHOSTUNREACH': case 'ENOTFOUND': return 4;
+        case 'ECONNREFUSED': return 5;
+        case 'ETIMEDOUT': return 6;
+        case 'EAFNOSUPPORT': return 8;
+        default: return 1;
+      }
+    };
+
+    const onError = async (err) => {
       await this.sendDownstreamMessage(
-        InitiateForwarderClientRep(forwarder_client_id, '0.0.0.0', 0, 1, 1)
+        InitiateForwarderClientRep(forwarder_client_id, '0.0.0.0', 0, 1, errorToReason(err))
       );
     };
 
@@ -585,7 +597,7 @@ class RemotePortForwarder {
   }
 
   async start() {
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       const server = net.createServer((socket) => {
         const forwarder_client_id = this.randomAlphaNum(10);
 
@@ -662,7 +674,7 @@ function parseArgs(argv) {
     server: null,
     encryptionKey: null,
     userAgent: null,
-    remotePortForwards: [],
+    remotePortForwards: null,
     retryAttempts: null,
     retryDuration: null,
   };
@@ -674,6 +686,7 @@ function parseArgs(argv) {
     else if (a === '--retry-attempts') args.retryAttempts = parseInt(argv[++i], 10);
     else if (a === '--retry-duration') args.retryDuration = parseFloat(argv[++i]);
     else if (a === '--remote-port-forwards') {
+      if (!args.remotePortForwards) args.remotePortForwards = [];
       while (argv[i + 1] && !argv[i + 1].startsWith('--')) {
         args.remotePortForwards.push(argv[++i]);
       }
@@ -699,7 +712,7 @@ async function main() {
   }
   encryptionKey = sha256Bytes(encryptionKey);
   const userAgent = args.userAgent || DEFAULTS.USER_AGENT;
-  const remotePortForwards = Array.isArray(args.remotePortForwards) && args.remotePortForwards.length > 0
+  const remotePortForwards = args.remotePortForwards !== null
     ? args.remotePortForwards
     : DEFAULTS.REMOTE_PORT_FORWARDS;
 
