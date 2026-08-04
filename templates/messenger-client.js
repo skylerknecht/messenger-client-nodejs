@@ -296,6 +296,7 @@ class Client {
 
     socket.once('connect', async () => {
       socket.removeListener('error', onError);
+      socket.on('error', () => {});
       this.forwarderClients.set(forwarder_client_id, socket);
       const bind_address = socket.localAddress;
       const bind_port = socket.localPort;
