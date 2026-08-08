@@ -29,6 +29,25 @@ function decrypt(key, ciphertext) {
   return Buffer.concat([decipher.update(data), decipher.final()]);
 }
 
+// Raised when an encrypted payload cannot be decrypted — almost always a wrong
+// encryption key. Treated as fatal: the messenger can never decrypt server
+// traffic, so main() logs once and stops instead of reconnecting in a loop.
+class DecryptionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'DecryptionError';
+  }
+}
+
+function decryptOrThrow(key, payload) {
+  try {
+    return decrypt(key, payload);
+  } catch (e) {
+    if (e instanceof DecryptionError) throw e;
+    throw new DecryptionError(e && e.message ? e.message : String(e));
+  }
+}
+
 /* Message Structures */
 
 const MSG = {
@@ -85,8 +104,15 @@ class MessageParser {
     [bind_port, v] = MessageParser.readUint32(v);
     [address_type, v] = MessageParser.readUint32(v);
     [reason, v] = MessageParser.readUint32(v);
-    [remote_addr, v] = MessageParser.readString(v);
-    [remote_port, v] = MessageParser.readUint32(v);
+    // remote_addr / remote_port are optional — the server omits them when it
+    // has no remote info (e.g. a reason!=0 denial). Only read them if bytes
+    // remain, otherwise a Rep without them overruns the buffer.
+    remote_addr = '';
+    remote_port = 0;
+    if (v.length > 0) {
+      [remote_addr, v] = MessageParser.readString(v);
+      [remote_port, v] = MessageParser.readUint32(v);
+    }
     return InitiateTCPClientRep(client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port);
   }
 
@@ -132,17 +158,17 @@ class MessageParser {
     let parsed;
     switch (message_type) {
       case MSG.INIT_TCP_REQ: {
-        const decrypted = decrypt(encryptionKey, payload);
+        const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseInitiateTCPClientReq(decrypted);
         break;
       }
       case MSG.INIT_TCP_REP: {
-        const decrypted = decrypt(encryptionKey, payload);
+        const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseInitiateTCPClientRep(decrypted);
         break;
       }
       case MSG.SEND_DATA: {
-        const decrypted = decrypt(encryptionKey, payload);
+        const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseSendData(decrypted);
         break;
       }
@@ -151,12 +177,12 @@ class MessageParser {
         break;
       }
       case MSG.BIND_REQ: {
-        const decrypted = decrypt(encryptionKey, payload);
+        const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseInitiateBINDReq(decrypted);
         break;
       }
       case MSG.BIND_REP: {
-        const decrypted = decrypt(encryptionKey, payload);
+        const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseInitiateBINDRep(decrypted);
         break;
       }
@@ -508,19 +534,24 @@ class WSClient extends Client {
       this.sendDownstreamMessage(msg);
     }
 
-    this.ws.addEventListener('message', (e) => {
-      try {
-        const buf = Buffer.from(e.data);
-        const messages = this.deserializeMessages(buf);
-        for (const msg of messages) {
-          this.handleMessage(msg);
-        }
-      } catch (err) {
-        console.error('[!] handler error:', err.message);
-      }
-    });
-
     return new Promise((resolve, reject) => {
+      this.ws.addEventListener('message', (e) => {
+        try {
+          const buf = Buffer.from(e.data);
+          const messages = this.deserializeMessages(buf);
+          for (const msg of messages) {
+            this.handleMessage(msg);
+          }
+        } catch (err) {
+          if (err instanceof DecryptionError) {
+            try { this.ws.close(); } catch {}
+            reject(err);
+            return;
+          }
+          console.error('[!] handler error:', err.message);
+        }
+      });
+
       this.ws.addEventListener('close', (e) => {
         console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
         resolve({ code: e.code, reason: e.reason });
@@ -666,6 +697,7 @@ class HTTPClient extends Client {
             this.handleMessage(m);
           }
         } catch (e) {
+          if (e instanceof DecryptionError) throw e;
           throw new Error(`Failed to deserialize server response: ${e.message}`);
         }
       }
@@ -871,6 +903,10 @@ async function main() {
       await client.start();
       break;
     } catch (e) {
+      if (e instanceof DecryptionError) {
+        console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        return;
+      }
       console.error(`[!] Connection failed: ${e?.message || e}`);
       client = null;
     }
@@ -897,6 +933,10 @@ async function main() {
       consecutiveFailures = 0;
       await client.start();
     } catch (e) {
+      if (e instanceof DecryptionError) {
+        console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        return;
+      }
       console.error(`[!] Reconnection failed: ${e?.message || e}`);
       consecutiveFailures++;
     }
