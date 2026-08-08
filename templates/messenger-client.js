@@ -397,6 +397,7 @@ class Client {
     };
 
     socket.once('connect', async () => {
+      socket.setTimeout(0);
       socket.removeListener('error', onError);
       socket.on('error', () => {});
       this.tcpClients.set(client_id, socket);
@@ -412,6 +413,12 @@ class Client {
     });
 
     socket.once('error', onError);
+
+    socket.setTimeout(5000, () => {
+      const err = new Error('Connection timed out');
+      err.code = 'ETIMEDOUT';
+      socket.destroy(err);
+    });
 
     socket.on('data', async (chunk) => {
       await this.sendDownstreamMessage(SendDataMessage(client_id, chunk));
@@ -890,8 +897,7 @@ async function main() {
       consecutiveFailures = 0;
       await client.start();
     } catch (e) {
-      const loc = e.stack ? e.stack.split('\n')[1]?.trim() : '';
-      console.error(`[!] ${e.name}: ${e.message}${loc ? ' at ' + loc : ''}`);
+      console.error(`[!] Reconnection failed: ${e?.message || e}`);
       consecutiveFailures++;
     }
   }
