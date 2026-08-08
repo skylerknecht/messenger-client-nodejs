@@ -21,8 +21,8 @@ def add_arguments(parser):
                      help="Hardcoded Messenger ID (optional).")
     cfg.add_argument("--user-agent", default=USER_AGENT,
                      help="Custom HTTP/WebSocket User-Agent string (optional).")
-    cfg.add_argument("--remote-port-forwards", nargs="*", default=[],
-                     help="Space delimited remote port forwards LISTENING-IP:LISTENING-PORT:REMOTE-IP:REMOTE-PORT (optional).")
+    cfg.add_argument("--proxy", default="",
+                     help="Proxy to use (optional).")
 
     retry = parser.add_argument_group("Retry behavior")
     retry.add_argument("--retry-duration", type=float, default=60.0,
