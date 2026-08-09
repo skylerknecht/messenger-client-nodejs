@@ -474,6 +474,17 @@ class Client {
     throw new Error('sendDownstreamMessage(message) not implemented by subclass');
   }
 
+  async readvertiseForwarders() {
+    // Re-announce our active remote port forwards so a server that lost its
+    // state (e.g. after a restart) can re-learn them. The server records an
+    // unknown bind as pending for the operator to re-adopt.
+    for (const fwd of this.remotePortForwarders) {
+      await this.sendDownstreamMessage(
+        InitiateBINDRep(fwd.identifier, fwd.listening_host, fwd.listening_port, 0)
+      );
+    }
+  }
+
 }
 
 class WSClient extends Client {
@@ -529,6 +540,7 @@ class WSClient extends Client {
   }
 
   async start() {
+    await this.readvertiseForwarders();
     while (this.downstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
       const msg = this.downstream_messages.shift();
       this.sendDownstreamMessage(msg);
@@ -675,6 +687,7 @@ class HTTPClient extends Client {
   }
 
   async start() {
+    await this.readvertiseForwarders();
     while (true) {
       const toSend = [CheckInMessage(this.identifier)];
       for (let i = 0; i < 5 && this.downstream_messages.length > 0; i++) {
