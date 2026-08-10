@@ -60,7 +60,7 @@ const MSG = {
 };
 
 const CheckInMessage = (messenger_id) => ({ kind: 'CheckInMessage', messenger_id });
-const InitiateTCPClientReq = (client_id, ip_address, port) => ({ kind: 'InitiateTCPClientReq', client_id, ip_address, port });
+const InitiateTCPClientReq = (client_id, ip_address, port, listening_host = '', listening_port = 0) => ({ kind: 'InitiateTCPClientReq', client_id, ip_address, port, listening_host, listening_port });
 const InitiateTCPClientRep = (client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port) => ({ kind: 'InitiateTCPClientRep', client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port });
 const SendDataMessage = (client_id, data) => ({ kind: 'SendDataMessage', client_id, data });
 const InitiateBINDReq = (bind_id, listening_host, listening_port, destination_host, destination_port) => ({ kind: 'InitiateBINDReq', bind_id, listening_host, listening_port, destination_host, destination_port });
@@ -93,7 +93,13 @@ class MessageParser {
     [client_id, v] = MessageParser.readString(v);
     [ip_address, v] = MessageParser.readString(v);
     [port, v] = MessageParser.readUint32(v);
-    return InitiateTCPClientReq(client_id, ip_address, port);
+    // Optional listening endpoint appended by a remote port forwarder.
+    let listening_host = '', listening_port = 0;
+    if (v.length > 0) {
+      [listening_host, v] = MessageParser.readString(v);
+      [listening_port, v] = MessageParser.readUint32(v);
+    }
+    return InitiateTCPClientReq(client_id, ip_address, port, listening_host, listening_port);
   }
 
   static parseInitiateTCPClientRep(value) {
@@ -214,11 +220,17 @@ class MessageBuilder {
     return MessageBuilder.buildString(messenger_id);
   }
 
-  static buildInitiateTCPClientReq(client_id, ip_address, port) {
+  static buildInitiateTCPClientReq(client_id, ip_address, port, listening_host = '', listening_port = 0) {
     const p1 = MessageBuilder.buildString(client_id);
     const p2 = MessageBuilder.buildString(ip_address);
     const p3 = Buffer.allocUnsafe(4);
     p3.writeUInt32BE(port >>> 0, 0);
+    if (listening_host) {
+      const p4 = MessageBuilder.buildString(listening_host);
+      const p5 = Buffer.allocUnsafe(4);
+      p5.writeUInt32BE(listening_port >>> 0, 0);
+      return Buffer.concat([p1, p2, p3, p4, p5]);
+    }
     return Buffer.concat([p1, p2, p3]);
   }
 
@@ -268,7 +280,7 @@ class MessageBuilder {
     switch (msg.kind) {
       case 'InitiateTCPClientReq': {
         message_type = MSG.INIT_TCP_REQ;
-        const plain = MessageBuilder.buildInitiateTCPClientReq(msg.client_id, msg.ip_address, msg.port);
+        const plain = MessageBuilder.buildInitiateTCPClientReq(msg.client_id, msg.ip_address, msg.port, msg.listening_host, msg.listening_port);
         value = encrypt(encryptionKey, plain);
         break;
       }
@@ -343,25 +355,37 @@ class Client {
   }
 
   async handleBind(message) {
-    const idx = this.remotePortForwarders.findIndex(f => f.identifier === message.bind_id);
-    if (idx !== -1) {
-      const existing = this.remotePortForwarders.splice(idx, 1)[0];
-      existing.closeAllClients();
-      existing.stop();
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '0.0.0.0', 0, 0));
+    // Empty listening host = STOP: tear down the forwarder with this bind_id
+    // (kill its connections, close its listener) and confirm it is gone.
+    if (message.listening_host === '') {
+      const idx = this.remotePortForwarders.findIndex(f => f.identifier === message.bind_id);
+      if (idx !== -1) {
+        const existing = this.remotePortForwarders.splice(idx, 1)[0];
+        existing.stop();               // sets _stopped so 'close' won't re-report
+        existing.closeAllClients();
+        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 0));
+      }
       return;
     }
+
+    // Real listening host = bind request. Idempotent if we already hold it.
+    if (this.remotePortForwarders.some(f => f.identifier === message.bind_id)) {
+      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
+      return;
+    }
+
     try {
       const forwarder = new RemotePortForwarder(this, message.bind_id, message.listening_host, message.listening_port, message.destination_host, message.destination_port);
       const success = await forwarder.start();
       if (!success) {
-        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+        // Bind failed → report GONE (empty host).
+        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 1));
         return;
       }
       this.remotePortForwarders.push(forwarder);
       await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
     } catch (e) {
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 1));
     }
   }
 
@@ -475,10 +499,10 @@ class Client {
   }
 
   async readvertiseForwarders() {
-    // Re-announce our active remote port forwards so a server that lost its
-    // state (e.g. after a restart) can re-learn them. The server records an
-    // unknown bind as pending for the operator to re-adopt.
-    for (const fwd of this.remotePortForwarders) {
+    // On every (re)connect, tell the server which RPFs we're actually listening
+    // on (a real-host BindRep each). A server that lost its state re-learns them
+    // as orphans; one that knows them just re-confirms.
+    for (const fwd of [...this.remotePortForwarders]) {
       await this.sendDownstreamMessage(
         InitiateBINDRep(fwd.identifier, fwd.listening_host, fwd.listening_port, 0)
       );
@@ -736,6 +760,21 @@ class RemotePortForwarder {
     this.destination_port = Number(destinationPort);
     this.server = null;
     this.clientIds = [];
+    this._stopped = false;   // set on an intentional stop so 'close' won't re-report
+    this._gone = false;      // guards against a double "gone" report
+  }
+
+  async _reportGone() {
+    // The listener died on its own (error/close) rather than via a stop —
+    // tell the server it is GONE (empty host) and drop ourselves.
+    if (this._stopped || this._gone) return;
+    this._gone = true;
+    const i = this.messenger.remotePortForwarders.indexOf(this);
+    if (i !== -1) this.messenger.remotePortForwarders.splice(i, 1);
+    this.closeAllClients();
+    try {
+      await this.messenger.sendDownstreamMessage(InitiateBINDRep(this.identifier, '', 0, 1));
+    } catch {}
   }
 
   async start() {
@@ -752,7 +791,9 @@ class RemotePortForwarder {
           InitiateTCPClientReq(
             client_id,
             this.destination_host,
-            this.destination_port
+            this.destination_port,
+            this.listening_host,
+            this.listening_port
           )
         );
 
@@ -781,6 +822,10 @@ class RemotePortForwarder {
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
+        // After we're up, an error or an unexpected close means the RPF died —
+        // report it gone (unless we stopped it on purpose).
+        this.server.on('error', () => this._reportGone());
+        this.server.on('close', () => this._reportGone());
         resolve(true);
       });
 
@@ -797,6 +842,7 @@ class RemotePortForwarder {
   }
 
   stop() {
+    this._stopped = true;
     if (this.server) {
       try { this.server.close(); } catch {}
     }
