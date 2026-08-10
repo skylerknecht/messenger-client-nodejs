@@ -355,15 +355,15 @@ class Client {
   }
 
   async handleBind(message) {
-    // Empty listening host = STOP: tear down the forwarder with this bind_id
-    // (kill its connections, close its listener) and confirm it is gone.
+    // Empty listening host = STOP: tear down the forwarder immediately.
+    // The server 'close' event fires _reportGone which sends the empty-host
+    // BindRep to the server.
     if (message.listening_host === '') {
       const idx = this.remotePortForwarders.findIndex(f => f.identifier === message.bind_id);
       if (idx !== -1) {
         const existing = this.remotePortForwarders.splice(idx, 1)[0];
-        existing.stop();               // sets _stopped so 'close' won't re-report
+        existing.stop();
         existing.closeAllClients();
-        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 0));
       }
       return;
     }
@@ -760,14 +760,13 @@ class RemotePortForwarder {
     this.destination_port = Number(destinationPort);
     this.server = null;
     this.clientIds = [];
-    this._stopped = false;   // set on an intentional stop so 'close' won't re-report
     this._gone = false;      // guards against a double "gone" report
   }
 
   async _reportGone() {
-    // The listener died on its own (error/close) rather than via a stop —
-    // tell the server it is GONE (empty host) and drop ourselves.
-    if (this._stopped || this._gone) return;
+    // Tell the server this RPF is GONE (empty-host BindRep).
+    // Guarded so it fires at most once even if both 'error' and 'close' race.
+    if (this._gone) return;
     this._gone = true;
     const i = this.messenger.remotePortForwarders.indexOf(this);
     if (i !== -1) this.messenger.remotePortForwarders.splice(i, 1);
@@ -822,8 +821,7 @@ class RemotePortForwarder {
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
-        // After we're up, an error or an unexpected close means the RPF died —
-        // report it gone (unless we stopped it on purpose).
+        // When the server closes (intentional or crash), report it gone.
         this.server.on('error', () => this._reportGone());
         this.server.on('close', () => this._reportGone());
         resolve(true);
@@ -842,7 +840,6 @@ class RemotePortForwarder {
   }
 
   stop() {
-    this._stopped = true;
     if (this.server) {
       try { this.server.close(); } catch {}
     }
