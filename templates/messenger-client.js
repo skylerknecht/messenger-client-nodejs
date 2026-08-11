@@ -60,7 +60,7 @@ const MSG = {
 };
 
 const CheckInMessage = (messenger_id) => ({ kind: 'CheckInMessage', messenger_id });
-const InitiateTCPClientReq = (client_id, ip_address, port, listening_host = '', listening_port = 0) => ({ kind: 'InitiateTCPClientReq', client_id, ip_address, port, listening_host, listening_port });
+const InitiateTCPClientReq = (client_id, destination_host, destination_port, listening_host = '', listening_port = 0) => ({ kind: 'InitiateTCPClientReq', client_id, destination_host, destination_port, listening_host, listening_port });
 const InitiateTCPClientRep = (client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port) => ({ kind: 'InitiateTCPClientRep', client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port });
 const SendDataMessage = (client_id, data) => ({ kind: 'SendDataMessage', client_id, data });
 const InitiateBINDReq = (bind_id, listening_host, listening_port, destination_host, destination_port) => ({ kind: 'InitiateBINDReq', bind_id, listening_host, listening_port, destination_host, destination_port });
@@ -89,17 +89,17 @@ class MessageParser {
 
   static parseInitiateTCPClientReq(value) {
     let v = value;
-    let client_id, ip_address, port;
+    let client_id, destination_host, destination_port;
     [client_id, v] = MessageParser.readString(v);
-    [ip_address, v] = MessageParser.readString(v);
-    [port, v] = MessageParser.readUint32(v);
+    [destination_host, v] = MessageParser.readString(v);
+    [destination_port, v] = MessageParser.readUint32(v);
     // Optional listening endpoint appended by a remote port forwarder.
     let listening_host = '', listening_port = 0;
     if (v.length > 0) {
       [listening_host, v] = MessageParser.readString(v);
       [listening_port, v] = MessageParser.readUint32(v);
     }
-    return InitiateTCPClientReq(client_id, ip_address, port, listening_host, listening_port);
+    return InitiateTCPClientReq(client_id, destination_host, destination_port, listening_host, listening_port);
   }
 
   static parseInitiateTCPClientRep(value) {
@@ -220,11 +220,11 @@ class MessageBuilder {
     return MessageBuilder.buildString(messenger_id);
   }
 
-  static buildInitiateTCPClientReq(client_id, ip_address, port, listening_host = '', listening_port = 0) {
+  static buildInitiateTCPClientReq(client_id, destination_host, destination_port, listening_host = '', listening_port = 0) {
     const p1 = MessageBuilder.buildString(client_id);
-    const p2 = MessageBuilder.buildString(ip_address);
+    const p2 = MessageBuilder.buildString(destination_host);
     const p3 = Buffer.allocUnsafe(4);
-    p3.writeUInt32BE(port >>> 0, 0);
+    p3.writeUInt32BE(destination_port >>> 0, 0);
     if (listening_host) {
       const p4 = MessageBuilder.buildString(listening_host);
       const p5 = Buffer.allocUnsafe(4);
@@ -280,7 +280,7 @@ class MessageBuilder {
     switch (msg.kind) {
       case 'InitiateTCPClientReq': {
         message_type = MSG.INIT_TCP_REQ;
-        const plain = MessageBuilder.buildInitiateTCPClientReq(msg.client_id, msg.ip_address, msg.port, msg.listening_host, msg.listening_port);
+        const plain = MessageBuilder.buildInitiateTCPClientReq(msg.client_id, msg.destination_host, msg.destination_port, msg.listening_host, msg.listening_port);
         value = encrypt(encryptionKey, plain);
         break;
       }
@@ -379,19 +379,19 @@ class Client {
       const success = await forwarder.start();
       if (!success) {
         // Bind failed → report GONE (empty host).
-        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 1));
+        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
         return;
       }
       this.remotePortForwarders.push(forwarder);
       await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
     } catch (e) {
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, '', 0, 1));
+      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
     }
   }
 
   async handleMessage(message) {
     if (message.kind === 'InitiateTCPClientReq') {
-      await this.handleInitiateTCPClientReq(message.client_id, message.ip_address, message.port);
+      await this.handleInitiateTCPClientReq(message.client_id, message.destination_host, message.destination_port);
     } else if (message.kind === 'InitiateTCPClientRep') {
       const socket = this.tcpClients.get(message.client_id);
       if (!socket) return;
@@ -424,7 +424,7 @@ class Client {
     }
   }
 
-  async handleInitiateTCPClientReq(client_id, ip, port) {
+  async handleInitiateTCPClientReq(client_id, host, port) {
     const socket = new net.Socket();
 
     const errorToReason = (err) => {
@@ -483,7 +483,7 @@ class Client {
       }
     });
 
-    socket.connect(port, ip);
+    socket.connect(port, host);
   }
 
   async connect() {
@@ -772,7 +772,7 @@ class RemotePortForwarder {
     if (i !== -1) this.messenger.remotePortForwarders.splice(i, 1);
     this.closeAllClients();
     try {
-      await this.messenger.sendDownstreamMessage(InitiateBINDRep(this.identifier, '', 0, 1));
+      await this.messenger.sendDownstreamMessage(InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
     } catch {}
   }
 
