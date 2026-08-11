@@ -57,6 +57,7 @@ const MSG = {
   CHECK_IN:     0x04,
   BIND_REQ:     0x05,
   BIND_REP:     0x06,
+  CHECK_OUT:    0x07,
 };
 
 const CheckInMessage = (messenger_id) => ({ kind: 'CheckInMessage', messenger_id });
@@ -65,6 +66,7 @@ const InitiateTCPClientRep = (client_id, bind_address, bind_port, address_type, 
 const SendDataMessage = (client_id, data) => ({ kind: 'SendDataMessage', client_id, data });
 const InitiateBINDReq = (bind_id, listening_host, listening_port, destination_host, destination_port) => ({ kind: 'InitiateBINDReq', bind_id, listening_host, listening_port, destination_host, destination_port });
 const InitiateBINDRep = (bind_id, listening_host, listening_port, reason) => ({ kind: 'InitiateBINDRep', bind_id, listening_host, listening_port, reason });
+const CheckOutMessage = () => ({ kind: 'CheckOutMessage' });
 
 class MessageParser {
   static readUint32(data) {
@@ -190,6 +192,10 @@ class MessageParser {
       case MSG.BIND_REP: {
         const decrypted = decryptOrThrow(encryptionKey, payload);
         parsed = MessageParser.parseInitiateBINDRep(decrypted);
+        break;
+      }
+      case MSG.CHECK_OUT: {
+        parsed = CheckOutMessage();
         break;
       }
       default:
@@ -330,6 +336,7 @@ class Client {
     this.tcpClients = new Map();
     this.remotePortForwarders = [];
     this.downstream_messages = [];
+    this.killed = false;
   }
 
   deserializeMessages(data) {
@@ -419,6 +426,19 @@ class Client {
       if (!ok) await new Promise(r => socket.once('drain', r));
     } else if (message.kind === 'InitiateBINDReq') {
       await this.handleBind(message);
+    } else if (message.kind === 'CheckOutMessage') {
+      console.log('[!] Kill signal received');
+      for (const forwarder of [...this.remotePortForwarders]) {
+        forwarder.stop();
+        forwarder.closeAllClients();
+      }
+      this.remotePortForwarders = [];
+      for (const [id, socket] of this.tcpClients) {
+        socket._serverClosed = true;
+        try { socket.destroy(); } catch {}
+      }
+      this.tcpClients.clear();
+      this.killed = true;
     } else {
       console.log(`[!] Received unknown message type: ${message.kind}`);
     }
@@ -578,6 +598,10 @@ class WSClient extends Client {
           for (const msg of messages) {
             this.handleMessage(msg);
           }
+          if (this.killed) {
+            try { this.ws.close(); } catch {}
+            return;
+          }
         } catch (err) {
           if (err instanceof DecryptionError) {
             try { this.ws.close(); } catch {}
@@ -712,7 +736,7 @@ class HTTPClient extends Client {
 
   async start() {
     await this.readvertiseForwarders();
-    while (true) {
+    while (!this.killed) {
       const toSend = [CheckInMessage(this.identifier)];
       for (let i = 0; i < 5 && this.downstream_messages.length > 0; i++) {
         toSend.push(this.downstream_messages.shift());
@@ -982,6 +1006,8 @@ async function main() {
     console.error(`[!] Disconnected: ${e?.message || e}`);
   }
 
+  if (client.killed) return;
+
   if (!(retryAttempts > 0)) {
     console.log('[*] Retry attempts set to zero, exiting.');
     return;
@@ -1006,6 +1032,7 @@ async function main() {
       }
       console.error(`[!] Reconnection failed: ${e?.message || e}`);
     }
+    if (client.killed) break;
   }
 }
 
