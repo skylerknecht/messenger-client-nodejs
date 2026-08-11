@@ -991,6 +991,8 @@ async function main() {
   let consecutiveFailures = 0;
 
   while (consecutiveFailures < retryAttempts) {
+    consecutiveFailures++;
+    console.log(`[*] Attempting to reconnect (attempt ${consecutiveFailures}/${retryAttempts})`);
     await sleep(sleepTime * 1000);
     try {
       await client.connect();
@@ -1003,7 +1005,6 @@ async function main() {
         return;
       }
       console.error(`[!] Reconnection failed: ${e?.message || e}`);
-      consecutiveFailures++;
     }
   }
 }
