@@ -595,12 +595,13 @@ class WSClient extends Client {
         try {
           const buf = Buffer.from(e.data);
           const messages = this.deserializeMessages(buf);
-          for (const msg of messages) {
-            this.handleMessage(msg);
-          }
-          if (this.killed) {
+          if (messages.some(m => m.kind === 'CheckOutMessage')) {
+            this.handleMessage(messages.find(m => m.kind === 'CheckOutMessage'));
             try { this.ws.close(); } catch {}
             return;
+          }
+          for (const msg of messages) {
+            this.handleMessage(msg);
           }
         } catch (err) {
           if (err instanceof DecryptionError) {
@@ -754,6 +755,10 @@ class HTTPClient extends Client {
       if (resp && resp.length > 0) {
         try {
           const messages = this.deserializeMessages(resp);
+          if (messages.some(m => m.kind === 'CheckOutMessage')) {
+            this.handleMessage(messages.find(m => m.kind === 'CheckOutMessage'));
+            break;
+          }
           for (const m of messages) {
             this.handleMessage(m);
           }
