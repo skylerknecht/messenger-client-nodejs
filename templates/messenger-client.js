@@ -956,7 +956,6 @@ async function main() {
 
       await client.connect();
       console.log(`[+] Connected to ${candidateUrl}`);
-      await client.start();
       break;
     } catch (e) {
       if (e instanceof DecryptionError) {
@@ -971,6 +970,16 @@ async function main() {
   if (!client) {
     console.log('[!] All connection attempts failed.');
     return;
+  }
+
+  try {
+    await client.start();
+  } catch (e) {
+    if (e instanceof DecryptionError) {
+      console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+      return;
+    }
+    console.error(`[!] Disconnected: ${e?.message || e}`);
   }
 
   if (!(retryAttempts > 0)) {
