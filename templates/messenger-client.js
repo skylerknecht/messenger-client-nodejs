@@ -335,7 +335,7 @@ class Client {
     this.identifier = '';
     this.tcpClients = new Map();
     this.remotePortForwarders = [];
-    this.downstream_messages = [];
+    this.upstream_messages = [];
     this.killed = false;
   }
 
@@ -377,7 +377,7 @@ class Client {
 
     // Real listening host = bind request. Idempotent if we already hold it.
     if (this.remotePortForwarders.some(f => f.identifier === message.bind_id)) {
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
+      await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
       return;
     }
 
@@ -386,13 +386,13 @@ class Client {
       const success = await forwarder.start();
       if (!success) {
         // Bind failed → report GONE (empty host).
-        await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+        await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
         return;
       }
       this.remotePortForwarders.push(forwarder);
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
+      await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
     } catch (e) {
-      await this.sendDownstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+      await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
     }
   }
 
@@ -428,6 +428,7 @@ class Client {
       await this.handleBind(message);
     } else if (message.kind === 'CheckOutMessage') {
       console.log('[!] Kill signal received');
+      this.killed = true;
       for (const forwarder of [...this.remotePortForwarders]) {
         forwarder.stop();
         forwarder.closeAllClients();
@@ -438,7 +439,6 @@ class Client {
         try { socket.destroy(); } catch {}
       }
       this.tcpClients.clear();
-      this.killed = true;
     } else {
       console.log(`[!] Received unknown message type: ${message.kind}`);
     }
@@ -461,7 +461,7 @@ class Client {
     };
 
     const onError = async (err) => {
-      await this.sendDownstreamMessage(
+      await this.sendUpstreamMessage(
         InitiateTCPClientRep(client_id, '0.0.0.0', 0, 1, errorToReason(err), '0.0.0.0', 0)
       );
     };
@@ -477,7 +477,7 @@ class Client {
       const remote_port = socket.remotePort;
       const address_type = net.isIPv4(bind_address) ? 1 : 4;
 
-      await this.sendDownstreamMessage(
+      await this.sendUpstreamMessage(
         InitiateTCPClientRep(client_id, bind_address, bind_port, address_type, 0, remote_addr, remote_port)
       );
     });
@@ -491,14 +491,16 @@ class Client {
     });
 
     socket.on('data', async (chunk) => {
-      await this.sendDownstreamMessage(SendDataMessage(client_id, chunk));
+      await this.sendUpstreamMessage(SendDataMessage(client_id, chunk));
     });
 
     socket.once('close', async () => {
       if (!socket._serverClosed) {
         if (this.tcpClients.has(client_id)) {
           this.tcpClients.delete(client_id);
-          await this.sendDownstreamMessage(SendDataMessage(client_id, Buffer.alloc(0)));
+          if (!this.killed) {
+            await this.sendUpstreamMessage(SendDataMessage(client_id, Buffer.alloc(0)));
+          }
         }
       }
     });
@@ -514,8 +516,8 @@ class Client {
     throw new Error('start() not implemented by subclass');
   }
 
-  sendDownstreamMessage(_message) {
-    throw new Error('sendDownstreamMessage(message) not implemented by subclass');
+  sendUpstreamMessage(_message) {
+    throw new Error('sendUpstreamMessage(message) not implemented by subclass');
   }
 
   async readvertiseForwarders() {
@@ -523,7 +525,7 @@ class Client {
     // on (a real-host BindRep each). A server that lost its state re-learns them
     // as orphans; one that knows them just re-confirms.
     for (const fwd of [...this.remotePortForwarders]) {
-      await this.sendDownstreamMessage(
+      await this.sendUpstreamMessage(
         InitiateBINDRep(fwd.identifier, fwd.listening_host, fwd.listening_port, 0)
       );
     }
@@ -546,6 +548,10 @@ class WSClient extends Client {
   }
 
   async connect(){
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
 {% if not electron %}
     this.ws = new WebSocket(this.serverUrl, this.wsOptions);
 {% else %}
@@ -585,9 +591,9 @@ class WSClient extends Client {
 
   async start() {
     await this.readvertiseForwarders();
-    while (this.downstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
-      const msg = this.downstream_messages.shift();
-      this.sendDownstreamMessage(msg);
+    while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
+      const msg = this.upstream_messages.shift();
+      this.sendUpstreamMessage(msg);
     }
 
     return new Promise((resolve, reject) => {
@@ -624,13 +630,13 @@ class WSClient extends Client {
     });
   }
 
-  sendDownstreamMessage(downstream_message) {
+  sendUpstreamMessage(upstream_message) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.downstream_messages.push(downstream_message);
+      this.upstream_messages.push(upstream_message);
       return;
     }
-    const downstream_messages = [CheckInMessage(this.identifier), downstream_message];
-    const payload = this.serializeMessages(downstream_messages);
+    const upstream_messages = [CheckInMessage(this.identifier), upstream_message];
+    const payload = this.serializeMessages(upstream_messages);
     this.ws.send(payload);
   }
 }
@@ -640,7 +646,8 @@ class HTTPClient extends Client {
     super(encryptionKey, userAgent);
     this.serverUrl = String(serverUrl).replace(/\/+$/g, '');
     this.identifier = '';
-    this.downstream_messages = [];
+    this.upstream_messages = [];
+    this._pending = [];
     this._timeoutMs = 10000;
 {% if not electron %}
     const isHttps = this.serverUrl.startsWith('https');
@@ -738,11 +745,13 @@ class HTTPClient extends Client {
   async start() {
     await this.readvertiseForwarders();
     while (!this.killed) {
-      const toSend = [CheckInMessage(this.identifier)];
-      for (let i = 0; i < 5 && this.downstream_messages.length > 0; i++) {
-        toSend.push(this.downstream_messages.shift());
+      if (this._pending.length === 0) {
+        for (let i = 0; i < 5 && this.upstream_messages.length > 0; i++) {
+          this._pending.push(this.upstream_messages.shift());
+        }
       }
 
+      const toSend = [CheckInMessage(this.identifier), ...this._pending];
       const payload = this.serializeMessages(toSend);
 
       let resp;
@@ -751,6 +760,8 @@ class HTTPClient extends Client {
       } catch (e) {
         throw new Error(`HTTP poll failed: ${e.message}`);
       }
+
+      this._pending.length = 0;
 
       if (resp && resp.length > 0) {
         try {
@@ -772,8 +783,8 @@ class HTTPClient extends Client {
     }
   }
 
-  async sendDownstreamMessage(downstream_message) {
-    this.downstream_messages.push(downstream_message);
+  async sendUpstreamMessage(upstream_message) {
+    this.upstream_messages.push(upstream_message);
   }
 }
 
@@ -801,7 +812,7 @@ class RemotePortForwarder {
     if (i !== -1) this.messenger.remotePortForwarders.splice(i, 1);
     this.closeAllClients();
     try {
-      await this.messenger.sendDownstreamMessage(InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
+      await this.messenger.sendUpstreamMessage(InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
     } catch {}
   }
 
@@ -815,7 +826,7 @@ class RemotePortForwarder {
 
         socket.pause();
 
-        this.messenger.sendDownstreamMessage(
+        this.messenger.sendUpstreamMessage(
           InitiateTCPClientReq(
             client_id,
             this.destination_host,
@@ -826,7 +837,7 @@ class RemotePortForwarder {
         );
 
         socket.on('data', async (chunk) => {
-          await this.messenger.sendDownstreamMessage(
+          await this.messenger.sendUpstreamMessage(
             SendDataMessage(client_id, chunk)
           );
         });
@@ -835,9 +846,11 @@ class RemotePortForwarder {
           if (!socket._serverClosed) {
             if (this.messenger.tcpClients.has(client_id)) {
               this.messenger.tcpClients.delete(client_id);
-              await this.messenger.sendDownstreamMessage(
-                SendDataMessage(client_id, Buffer.alloc(0))
-              );
+              if (!this.messenger.killed) {
+                await this.messenger.sendUpstreamMessage(
+                  SendDataMessage(client_id, Buffer.alloc(0))
+                );
+              }
             }
           }
         });
