@@ -482,6 +482,9 @@ class Client {
 
     socket.once('connect', async () => {
       socket.setTimeout(0);
+      // Replace onError with a no-op: without this, a post-connect socket
+      // error (e.g. ECONNRESET) re-fires onError and sends a duplicate
+      // failure rep even though the success rep was already sent.
       socket.removeListener('error', onError);
       socket.on('error', () => {});
       this.tcpClients.set(client_id, socket);
