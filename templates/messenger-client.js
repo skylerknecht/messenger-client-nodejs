@@ -363,14 +363,10 @@ class Client {
 
   async handleBind(message) {
     // Empty listening host = STOP: tear down the forwarder immediately.
-    // The server 'close' event fires _reportGone which sends the empty-host
-    // BindRep to the server.
     if (message.listening_host === '') {
-      const idx = this.remotePortForwarders.findIndex(f => f.identifier === message.bind_id);
-      if (idx !== -1) {
-        const existing = this.remotePortForwarders.splice(idx, 1)[0];
+      const existing = this.remotePortForwarders.find(f => f.identifier === message.bind_id);
+      if (existing) {
         existing.stop();
-        existing.closeAllClients();
       }
       return;
     }
@@ -385,66 +381,82 @@ class Client {
       const forwarder = new RemotePortForwarder(this, message.bind_id, message.listening_host, message.listening_port, message.destination_host, message.destination_port);
       const success = await forwarder.start();
       if (!success) {
-        // Bind failed → report GONE (empty host).
-        await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+        if (!this.killed) {
+          await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+        }
         return;
       }
-      this.remotePortForwarders.push(forwarder);
       await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
     } catch (e) {
-      await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+      if (!this.killed) {
+        await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+      }
     }
   }
 
-  async handleMessage(message) {
+  async dispatchMessage(message) {
     if (message.kind === 'InitiateTCPClientReq') {
-      await this.handleInitiateTCPClientReq(message.client_id, message.destination_host, message.destination_port);
+      // Background — don't await
+      this.handleInitiateTCPClientReq(message.client_id, message.destination_host, message.destination_port)
+        .catch(() => {});
     } else if (message.kind === 'InitiateTCPClientRep') {
       const socket = this.tcpClients.get(message.client_id);
       if (!socket) return;
       if (message.reason !== 0) {
-        socket._serverClosed = true;
-        try { socket.end(); } catch {}
         this.tcpClients.delete(message.client_id);
-      } else {
-        socket.resume();
+        socket._serverClosed = true;
+        try { socket.destroy(); } catch {}
+        return;
       }
+      socket.resume();
+      // Don't await stream — it runs in background
+      this.stream(message.client_id).catch(() => {});
     } else if (message.kind === 'SendDataMessage') {
       const socket = this.tcpClients.get(message.client_id);
       if (!socket) return;
-
       if (!message.data || message.data.length === 0) {
-        if (this.tcpClients.has(message.client_id)) {
-          this.tcpClients.delete(message.client_id);
-          socket._serverClosed = true;
-          try { socket.end(); } catch {}
-        }
+        this.tcpClients.delete(message.client_id);
+        socket._serverClosed = true;
+        try { socket.destroy(); } catch {}
         return;
       }
-
-      const ok = socket.write(message.data);
-      if (!ok) await new Promise(r => socket.once('drain', r));
+      socket.write(message.data);
     } else if (message.kind === 'InitiateBINDReq') {
-      await this.handleBind(message);
+      // Background — don't await
+      this.handleBind(message).catch(() => {});
+    } else if (message.kind === 'CheckInMessage') {
+      this.identifier = message.messenger_id;
     } else if (message.kind === 'CheckOutMessage') {
-      console.log('[!] Kill signal received');
-      this.killed = true;
-      for (const forwarder of [...this.remotePortForwarders]) {
-        forwarder.stop();
-        forwarder.closeAllClients();
-      }
-      this.remotePortForwarders = [];
-      for (const [id, socket] of this.tcpClients) {
+      this.handleCheckout();
+    }
+  }
+
+  handleCheckout() {
+    console.log('[!] Kill signal received');
+    this.killed = true;
+    for (const forwarder of [...this.remotePortForwarders]) {
+      forwarder.stop();
+    }
+    for (const [id, socket] of this.tcpClients) {
+      this.tcpClients.delete(id);
+      socket._serverClosed = true;
+      try { socket.destroy(); } catch {}
+    }
+  }
+
+  closeConnectionsForBind(bindId) {
+    for (const [id, socket] of this.tcpClients) {
+      if (socket._bindId === bindId) {
+        this.tcpClients.delete(id);
         socket._serverClosed = true;
         try { socket.destroy(); } catch {}
       }
-      this.tcpClients.clear();
-    } else {
-      console.log(`[!] Received unknown message type: ${message.kind}`);
     }
   }
 
   async handleInitiateTCPClientReq(client_id, host, port) {
+    if (this.killed) return;
+
     const socket = new net.Socket();
 
     const errorToReason = (err) => {
@@ -461,9 +473,11 @@ class Client {
     };
 
     const onError = async (err) => {
-      await this.sendUpstreamMessage(
-        InitiateTCPClientRep(client_id, '0.0.0.0', 0, 1, errorToReason(err), '0.0.0.0', 0)
-      );
+      if (!this.killed) {
+        await this.sendUpstreamMessage(
+          InitiateTCPClientRep(client_id, '0.0.0.0', 0, 1, errorToReason(err), '0.0.0.0', 0)
+        );
+      }
     };
 
     socket.once('connect', async () => {
@@ -496,16 +510,23 @@ class Client {
 
     socket.once('close', async () => {
       if (!socket._serverClosed) {
-        if (this.tcpClients.has(client_id)) {
-          this.tcpClients.delete(client_id);
-          if (!this.killed) {
-            await this.sendUpstreamMessage(SendDataMessage(client_id, Buffer.alloc(0)));
-          }
+        const removed = this.tcpClients.delete(client_id);
+        if (removed && !this.killed) {
+          await this.sendUpstreamMessage(SendDataMessage(client_id, Buffer.alloc(0)));
         }
       }
     });
 
     socket.connect(port, host);
+  }
+
+  async stream(clientId) {
+    const socket = this.tcpClients.get(clientId);
+    if (!socket) return;
+
+    socket.on('data', async (chunk) => {
+      await this.sendUpstreamMessage(SendDataMessage(clientId, chunk));
+    });
   }
 
   async connect() {
@@ -597,17 +618,17 @@ class WSClient extends Client {
     }
 
     return new Promise((resolve, reject) => {
-      this.ws.addEventListener('message', (e) => {
+      this.ws.addEventListener('message', async (e) => {
         try {
           const buf = Buffer.from(e.data);
           const messages = this.deserializeMessages(buf);
           if (messages.some(m => m.kind === 'CheckOutMessage')) {
-            this.handleMessage(messages.find(m => m.kind === 'CheckOutMessage'));
+            this.handleCheckout();
             try { this.ws.close(); } catch {}
             return;
           }
           for (const msg of messages) {
-            this.handleMessage(msg);
+            await this.dispatchMessage(msg);
           }
         } catch (err) {
           if (err instanceof DecryptionError) {
@@ -767,11 +788,11 @@ class HTTPClient extends Client {
         try {
           const messages = this.deserializeMessages(resp);
           if (messages.some(m => m.kind === 'CheckOutMessage')) {
-            this.handleMessage(messages.find(m => m.kind === 'CheckOutMessage'));
+            this.handleCheckout();
             break;
           }
           for (const m of messages) {
-            this.handleMessage(m);
+            await this.dispatchMessage(m);
           }
         } catch (e) {
           if (e instanceof DecryptionError) throw e;
@@ -799,29 +820,35 @@ class RemotePortForwarder {
     this.destination_host = destinationHost;
     this.destination_port = Number(destinationPort);
     this.server = null;
-    this.clientIds = [];
-    this._gone = false;      // guards against a double "gone" report
+    this._cleanedUp = false;
   }
 
-  async _reportGone() {
-    // Tell the server this RPF is GONE (empty-host BindRep).
-    // Guarded so it fires at most once even if both 'error' and 'close' race.
-    if (this._gone) return;
-    this._gone = true;
-    const i = this.messenger.remotePortForwarders.indexOf(this);
-    if (i !== -1) this.messenger.remotePortForwarders.splice(i, 1);
-    this.closeAllClients();
-    try {
-      await this.messenger.sendUpstreamMessage(InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
-    } catch {}
+  async cleanup() {
+    if (this._cleanedUp) return;
+    this._cleanedUp = true;
+    const idx = this.messenger.remotePortForwarders.indexOf(this);
+    if (idx === -1) return;
+    this.messenger.remotePortForwarders.splice(idx, 1);
+    this.messenger.closeConnectionsForBind(this.identifier);
+    if (!this.messenger.killed) {
+      try {
+        await this.messenger.sendUpstreamMessage(
+          InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
+      } catch {}
+    }
   }
 
   async start() {
     return new Promise((resolve, reject) => {
       this.server = net.createServer((socket) => {
-        const client_id = this.randomAlphaNum(10);
-        this.clientIds.push(client_id);
+        if (this.messenger.killed) {
+          try { socket.destroy(); } catch {}
+          return;
+        }
 
+        const client_id = this.randomAlphaNum(10);
+
+        socket._bindId = this.identifier;
         this.messenger.tcpClients.set(client_id, socket);
 
         socket.pause();
@@ -836,21 +863,13 @@ class RemotePortForwarder {
           )
         );
 
-        socket.on('data', async (chunk) => {
-          await this.messenger.sendUpstreamMessage(
-            SendDataMessage(client_id, chunk)
-          );
-        });
-
         socket.once('close', async () => {
           if (!socket._serverClosed) {
-            if (this.messenger.tcpClients.has(client_id)) {
-              this.messenger.tcpClients.delete(client_id);
-              if (!this.messenger.killed) {
-                await this.messenger.sendUpstreamMessage(
-                  SendDataMessage(client_id, Buffer.alloc(0))
-                );
-              }
+            const removed = this.messenger.tcpClients.delete(client_id);
+            if (removed && !this.messenger.killed) {
+              await this.messenger.sendUpstreamMessage(
+                SendDataMessage(client_id, Buffer.alloc(0))
+              );
             }
           }
         });
@@ -863,9 +882,10 @@ class RemotePortForwarder {
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
-        // When the server closes (intentional or crash), report it gone.
-        this.server.on('error', () => this._reportGone());
-        this.server.on('close', () => this._reportGone());
+        this.messenger.remotePortForwarders.push(this);
+        // When the server closes (intentional or crash), clean up.
+        this.server.on('error', () => this.cleanup());
+        this.server.on('close', () => this.cleanup());
         resolve(true);
       });
 
@@ -884,17 +904,6 @@ class RemotePortForwarder {
   stop() {
     if (this.server) {
       try { this.server.close(); } catch {}
-    }
-  }
-
-  closeAllClients() {
-    for (const clientId of this.clientIds) {
-      const socket = this.messenger.tcpClients.get(clientId);
-      if (socket) {
-        this.messenger.tcpClients.delete(clientId);
-        socket._serverClosed = true;
-        try { socket.destroy(); } catch {}
-      }
     }
   }
 
