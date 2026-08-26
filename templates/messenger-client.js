@@ -565,6 +565,21 @@ class Client {
     }
   }
 
+  cleanup() {
+    for (const fwd of [...this.remotePortForwarders]) {
+      fwd.stop();
+    }
+    for (const [id, socket] of [...this.tcpClients]) {
+      try { socket.destroy(); } catch {}
+      this.tcpClients.delete(id);
+    }
+    this.closeTransport();
+  }
+
+  closeTransport() {
+    // Subclasses override to tear down their transport.
+  }
+
 }
 
 class WSClient extends Client {
@@ -625,10 +640,6 @@ class WSClient extends Client {
 
   async start() {
     await this.readvertiseForwarders();
-    while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
-      const msg = this.upstream_messages.shift();
-      this.sendUpstreamMessage(msg);
-    }
 
     return new Promise((resolve, reject) => {
       this.ws.addEventListener('message', async (e) => {
@@ -661,6 +672,11 @@ class WSClient extends Client {
       this.ws.addEventListener('error', (e) => {
         reject(e.error || new Error(e.message || 'WebSocket error'));
       }, { once: true });
+
+      while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
+        const msg = this.upstream_messages.shift();
+        this.sendUpstreamMessage(msg);
+      }
     });
   }
 
@@ -672,6 +688,13 @@ class WSClient extends Client {
     const upstream_messages = [CheckInMessage(this.identifier), upstream_message];
     const payload = this.serializeMessages(upstream_messages);
     this.ws.send(payload);
+  }
+
+  closeTransport() {
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
   }
 }
 
@@ -819,6 +842,15 @@ class HTTPClient extends Client {
 
   async sendUpstreamMessage(upstream_message) {
     this.upstream_messages.push(upstream_message);
+  }
+
+  closeTransport() {
+{% if not electron %}
+    if (this._agent) {
+      this._agent.destroy();
+      this._agent = null;
+    }
+{% endif %}
   }
 }
 
@@ -1048,42 +1080,46 @@ async function main() {
   }
 
   try {
-    await client.start();
-  } catch (e) {
-    if (e instanceof DecryptionError) {
-      console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
-      return;
-    }
-    console.error(`[!] Disconnected: ${e?.message || e}`);
-  }
-
-  if (client.killed) return;
-
-  if (!(retryAttempts > 0)) {
-    console.log('[*] Retry attempts set to zero, exiting.');
-    return;
-  }
-
-  const sleepTime = retryDuration / retryAttempts;
-  let consecutiveFailures = 0;
-
-  while (consecutiveFailures < retryAttempts) {
-    consecutiveFailures++;
-    console.log(`[*] Attempting to reconnect (attempt ${consecutiveFailures}/${retryAttempts})`);
-    await sleep(sleepTime * 1000);
     try {
-      await client.connect();
-      console.log(`[+] Reconnected`);
-      consecutiveFailures = 0;
       await client.start();
     } catch (e) {
       if (e instanceof DecryptionError) {
         console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
         return;
       }
-      console.error(`[!] Reconnection failed: ${e?.message || e}`);
+      console.error(`[!] Disconnected: ${e?.message || e}`);
     }
-    if (client.killed) break;
+
+    if (client.killed) return;
+
+    if (!(retryAttempts > 0)) {
+      console.log('[*] Retry attempts set to zero, exiting.');
+      return;
+    }
+
+    const sleepTime = retryDuration / retryAttempts;
+    let consecutiveFailures = 0;
+
+    while (consecutiveFailures < retryAttempts) {
+      consecutiveFailures++;
+      console.log(`[*] Attempting to reconnect (attempt ${consecutiveFailures}/${retryAttempts})`);
+      await sleep(sleepTime * 1000);
+      try {
+        await client.connect();
+        console.log(`[+] Reconnected`);
+        consecutiveFailures = 0;
+        await client.start();
+      } catch (e) {
+        if (e instanceof DecryptionError) {
+          console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+          return;
+        }
+        console.error(`[!] Reconnection failed: ${e?.message || e}`);
+      }
+      if (client.killed) break;
+    }
+  } finally {
+    client.cleanup();
   }
 }
 
