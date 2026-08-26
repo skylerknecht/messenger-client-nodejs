@@ -381,10 +381,10 @@ class Client {
 
     try {
       const forwarder = new RemotePortForwarder(this, message.bind_id, message.listening_host, message.listening_port, message.destination_host, message.destination_port);
-      const success = await forwarder.start();
-      if (!success) {
+      const reason = await forwarder.start();
+      if (reason !== 0) {
         if (!this.killed) {
-          await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
+          await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, reason));
         }
         return;
       }
@@ -639,60 +639,75 @@ class WSClient extends Client {
   }
 
   async start() {
-    const {promise, resolve, reject} = (() => {
-      let resolve, reject;
-      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-      return {promise, resolve, reject};
-    })();
+    await Promise.all([this.receiveLoop(), this.sendLoop()]);
+  }
 
-    this.ws.addEventListener('message', async (e) => {
-      try {
-        const buf = Buffer.from(e.data);
-        const messages = this.deserializeMessages(buf);
-        if (messages.some(m => m.kind === 'CheckOutMessage')) {
-          this.handleCheckout();
-          try { this.ws.close(); } catch {}
-          return;
+  async receiveLoop() {
+    return new Promise((resolve, reject) => {
+      this.ws.addEventListener('message', async (e) => {
+        try {
+          const buf = Buffer.from(e.data);
+          const messages = this.deserializeMessages(buf);
+          if (messages.some(m => m.kind === 'CheckOutMessage')) {
+            this.handleCheckout();
+            try { this.ws.close(); } catch {}
+            return;
+          }
+          for (const msg of messages) {
+            await this.dispatchMessage(msg);
+          }
+        } catch (err) {
+          if (err instanceof DecryptionError) {
+            try { this.ws.close(); } catch {}
+            reject(err);
+            return;
+          }
+          console.error('[!] handler error:', err.message);
         }
-        for (const msg of messages) {
-          await this.dispatchMessage(msg);
-        }
-      } catch (err) {
-        if (err instanceof DecryptionError) {
-          try { this.ws.close(); } catch {}
-          reject(err);
-          return;
-        }
-        console.error('[!] handler error:', err.message);
-      }
+      });
+
+      this.ws.addEventListener('close', (e) => {
+        console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
+        this._signalSendLoop();
+        resolve({ code: e.code, reason: e.reason });
+      }, { once: true });
+
+      this.ws.addEventListener('error', (e) => {
+        this._signalSendLoop();
+        reject(e.error || new Error(e.message || 'WebSocket error'));
+      }, { once: true });
     });
+  }
 
-    this.ws.addEventListener('close', (e) => {
-      console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
-      resolve({ code: e.code, reason: e.reason });
-    }, { once: true });
-
-    this.ws.addEventListener('error', (e) => {
-      reject(e.error || new Error(e.message || 'WebSocket error'));
-    }, { once: true });
-
-    while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
-      const msg = this.upstream_messages.shift();
-      this.sendUpstreamMessage(msg);
-    }
-
+  async sendLoop() {
     await this.readvertiseForwarders();
-    return promise;
+    while (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (this.upstream_messages.length === 0) {
+        await new Promise(r => { this._sendResolve = r; });
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
+      }
+      const message = this.upstream_messages.shift();
+      if (!message) continue;
+      try {
+        const payload = this.serializeMessages([CheckInMessage(this.identifier), message]);
+        this.ws.send(payload);
+      } catch {
+        this.upstream_messages.unshift(message);
+        break;
+      }
+    }
+  }
+
+  _signalSendLoop() {
+    if (this._sendResolve) {
+      this._sendResolve();
+      this._sendResolve = null;
+    }
   }
 
   sendUpstreamMessage(upstream_message) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.upstream_messages.push(upstream_message);
-      return;
-    }
-    const upstream_messages = [CheckInMessage(this.identifier), upstream_message];
-    const payload = this.serializeMessages(upstream_messages);
-    this.ws.send(payload);
+    this.upstream_messages.push(upstream_message);
+    this._signalSendLoop();
   }
 
   closeTransport() {
@@ -893,7 +908,7 @@ class RemotePortForwarder {
     if (!this.messenger.killed) {
       try {
         await this.messenger.sendUpstreamMessage(
-          InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 1));
+          InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 5));
       } catch {}
     }
   }
@@ -948,7 +963,7 @@ class RemotePortForwarder {
         const addr = this.server.address();
         if (this.messenger.killed) {
           try { this.server.close(); } catch {}
-          resolve(false);
+          resolve(1);
           return;
         }
         console.log(
@@ -956,7 +971,7 @@ class RemotePortForwarder {
         );
         this.messenger.remotePortForwarders.push(this);
         this.server.on('error', () => this.cleanup());
-        resolve(true);
+        resolve(0);
       });
 
       this.server.once('error', (e) => {
@@ -964,7 +979,11 @@ class RemotePortForwarder {
           `[!] ${this.listening_host}:${this.listening_port} is already in use or failed:`,
           e.message
         );
-        resolve(false);
+        const reason = e.code === 'EADDRINUSE' ? 2
+                     : e.code === 'EACCES' ? 3
+                     : e.code === 'ENOTFOUND' ? 4
+                     : 1;
+        resolve(reason);
       });
 
       this.server.listen(this.listening_port, this.listening_host);
