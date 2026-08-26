@@ -908,9 +908,7 @@ class RemotePortForwarder {
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
         this.messenger.remotePortForwarders.push(this);
-        // When the server closes (intentional or crash), clean up.
         this.server.on('error', () => this.cleanup());
-        this.server.on('close', () => this.cleanup());
         resolve(true);
       });
 
@@ -930,6 +928,7 @@ class RemotePortForwarder {
     if (this.server) {
       try { this.server.close(); } catch {}
     }
+    this.cleanup();
   }
 
   randomAlphaNum(len = 10) {
