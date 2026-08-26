@@ -362,6 +362,8 @@ class Client {
   }
 
   async handleBind(message) {
+    if (this.killed) return;
+
     // Empty listening host = STOP: tear down the forwarder immediately.
     if (message.listening_host === '') {
       const existing = this.remotePortForwarders.find(f => f.identifier === message.bind_id);
@@ -384,6 +386,10 @@ class Client {
         if (!this.killed) {
           await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 1));
         }
+        return;
+      }
+      if (this.killed) {
+        forwarder.stop();
         return;
       }
       await this.sendUpstreamMessage(InitiateBINDRep(message.bind_id, message.listening_host, message.listening_port, 0));
@@ -487,6 +493,10 @@ class Client {
       // failure rep even though the success rep was already sent.
       socket.removeListener('error', onError);
       socket.on('error', () => {});
+      if (this.killed) {
+        try { socket.destroy(); } catch {}
+        return;
+      }
       this.tcpClients.set(client_id, socket);
       const bind_address = socket.localAddress;
       const bind_port = socket.localPort;
@@ -844,7 +854,7 @@ class RemotePortForwarder {
   async start() {
     return new Promise((resolve, reject) => {
       this.server = net.createServer((socket) => {
-        if (this.messenger.killed) {
+        if (this.messenger.killed || !this.messenger.remotePortForwarders.includes(this)) {
           try { socket.destroy(); } catch {}
           return;
         }
@@ -853,6 +863,13 @@ class RemotePortForwarder {
 
         socket._bindId = this.identifier;
         this.messenger.tcpClients.set(client_id, socket);
+
+        if (!this.messenger.remotePortForwarders.includes(this)) {
+          this.messenger.tcpClients.delete(client_id);
+          socket._serverClosed = true;
+          try { socket.destroy(); } catch {}
+          return;
+        }
 
         socket.pause();
 
@@ -882,6 +899,11 @@ class RemotePortForwarder {
 
       this.server.once('listening', () => {
         const addr = this.server.address();
+        if (this.messenger.killed) {
+          try { this.server.close(); } catch {}
+          resolve(false);
+          return;
+        }
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
