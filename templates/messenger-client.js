@@ -639,45 +639,50 @@ class WSClient extends Client {
   }
 
   async start() {
-    await this.readvertiseForwarders();
+    const {promise, resolve, reject} = (() => {
+      let resolve, reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      return {promise, resolve, reject};
+    })();
 
-    return new Promise((resolve, reject) => {
-      this.ws.addEventListener('message', async (e) => {
-        try {
-          const buf = Buffer.from(e.data);
-          const messages = this.deserializeMessages(buf);
-          if (messages.some(m => m.kind === 'CheckOutMessage')) {
-            this.handleCheckout();
-            try { this.ws.close(); } catch {}
-            return;
-          }
-          for (const msg of messages) {
-            await this.dispatchMessage(msg);
-          }
-        } catch (err) {
-          if (err instanceof DecryptionError) {
-            try { this.ws.close(); } catch {}
-            reject(err);
-            return;
-          }
-          console.error('[!] handler error:', err.message);
+    this.ws.addEventListener('message', async (e) => {
+      try {
+        const buf = Buffer.from(e.data);
+        const messages = this.deserializeMessages(buf);
+        if (messages.some(m => m.kind === 'CheckOutMessage')) {
+          this.handleCheckout();
+          try { this.ws.close(); } catch {}
+          return;
         }
-      });
-
-      this.ws.addEventListener('close', (e) => {
-        console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
-        resolve({ code: e.code, reason: e.reason });
-      }, { once: true });
-
-      this.ws.addEventListener('error', (e) => {
-        reject(e.error || new Error(e.message || 'WebSocket error'));
-      }, { once: true });
-
-      while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
-        const msg = this.upstream_messages.shift();
-        this.sendUpstreamMessage(msg);
+        for (const msg of messages) {
+          await this.dispatchMessage(msg);
+        }
+      } catch (err) {
+        if (err instanceof DecryptionError) {
+          try { this.ws.close(); } catch {}
+          reject(err);
+          return;
+        }
+        console.error('[!] handler error:', err.message);
       }
     });
+
+    this.ws.addEventListener('close', (e) => {
+      console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
+      resolve({ code: e.code, reason: e.reason });
+    }, { once: true });
+
+    this.ws.addEventListener('error', (e) => {
+      reject(e.error || new Error(e.message || 'WebSocket error'));
+    }, { once: true });
+
+    while (this.upstream_messages.length > 0 && this.ws.readyState === WebSocket.OPEN) {
+      const msg = this.upstream_messages.shift();
+      this.sendUpstreamMessage(msg);
+    }
+
+    await this.readvertiseForwarders();
+    return promise;
   }
 
   sendUpstreamMessage(upstream_message) {
@@ -783,6 +788,16 @@ class HTTPClient extends Client {
     }
 
     if (this.identifier) {
+      if (resp && resp.length > 0) {
+        const messages = this.deserializeMessages(resp);
+        if (messages.some(m => m.kind === 'CheckOutMessage')) {
+          this.handleCheckout();
+          return;
+        }
+        for (const m of messages) {
+          await this.dispatchMessage(m);
+        }
+      }
       return;
     }
 
