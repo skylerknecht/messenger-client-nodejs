@@ -588,6 +588,7 @@ class WSClient extends Client {
     super(encryptionKey, userAgent);
     this.serverUrl = serverUrl.replace(/^\/+|\/+$/g, '');
     this.ws = null;
+    this._pending = [];
 {% if not electron %}
     this.wsOptions = {
       headers: this.headers,
@@ -682,17 +683,20 @@ class WSClient extends Client {
   async sendLoop() {
     await this.readvertiseForwarders();
     while (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      if (this.upstream_messages.length === 0) {
-        await new Promise(r => { this._sendResolve = r; });
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
+      if (this._pending.length === 0) {
+        if (this.upstream_messages.length === 0) {
+          await new Promise(r => { this._sendResolve = r; });
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
+        }
+        while (this.upstream_messages.length > 0)
+          this._pending.push(this.upstream_messages.shift());
       }
-      const message = this.upstream_messages.shift();
-      if (!message) continue;
       try {
-        const payload = this.serializeMessages([CheckInMessage(this.identifier), message]);
+        const batch = [CheckInMessage(this.identifier), ...this._pending];
+        const payload = this.serializeMessages(batch);
         this.ws.send(payload);
+        this._pending.length = 0;
       } catch {
-        this.upstream_messages.unshift(message);
         break;
       }
     }
@@ -833,9 +837,8 @@ class HTTPClient extends Client {
     await this.readvertiseForwarders();
     while (!this.killed) {
       if (this._pending.length === 0) {
-        for (let i = 0; i < 5 && this.upstream_messages.length > 0; i++) {
+        while (this.upstream_messages.length > 0)
           this._pending.push(this.upstream_messages.shift());
-        }
       }
 
       const toSend = [CheckInMessage(this.identifier), ...this._pending];
