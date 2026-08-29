@@ -694,7 +694,12 @@ class WSClient extends Client {
       try {
         const batch = [CheckInMessage(this.identifier), ...this._pending];
         const payload = this.serializeMessages(batch);
+{% if not electron %}
+        const err = await new Promise(r => this.ws.send(payload, r));
+        if (err) throw err;
+{% else %}
         this.ws.send(payload);
+{% endif %}
         this._pending.length = 0;
       } catch {
         break;
@@ -1143,6 +1148,7 @@ async function main() {
       await sleep(sleepTime * 1000);
       try {
         await client.connect();
+        if (client.killed) break;
         console.log(`[+] Reconnected`);
         consecutiveFailures = 0;
         await client.start();
