@@ -247,10 +247,13 @@ class MessageBuilder {
     p3.writeUInt32BE(bind_port >>> 0, 0);
     p3.writeUInt32BE(address_type >>> 0, 4);
     p3.writeUInt32BE(reason >>> 0, 8);
-    const p4 = MessageBuilder.buildString(remote_addr);
-    const p5 = Buffer.allocUnsafe(4);
-    p5.writeUInt32BE(remote_port >>> 0, 0);
-    return Buffer.concat([p1, p2, p3, p4, p5]);
+    if (remote_addr) {
+      const p4 = MessageBuilder.buildString(remote_addr);
+      const p5 = Buffer.allocUnsafe(4);
+      p5.writeUInt32BE(remote_port >>> 0, 0);
+      return Buffer.concat([p1, p2, p3, p4, p5]);
+    }
+    return Buffer.concat([p1, p2, p3]);
   }
 
   static buildSendData(client_id, data) {
@@ -400,7 +403,7 @@ class Client {
     }
   }
 
-  async dispatchMessage(message) {
+  dispatchMessage(message) {
     if (message.kind === 'InitiateTCPClientReq') {
       // Background -- don't await
       this.handleInitiateTCPClientReq(message.client_id, message.destination_host, message.destination_port)
@@ -481,7 +484,7 @@ class Client {
     const onError = async (err) => {
       if (!this.killed) {
         await this.sendUpstreamMessage(
-          InitiateTCPClientRep(client_id, '0.0.0.0', 0, 1, errorToReason(err), '0.0.0.0', 0)
+          InitiateTCPClientRep(client_id, '0.0.0.0', 0, 1, errorToReason(err), '', 0)
         );
       }
     };
@@ -645,7 +648,7 @@ class WSClient extends Client {
 
   async receiveLoop() {
     return new Promise((resolve, reject) => {
-      this.ws.addEventListener('message', async (e) => {
+      this.ws.addEventListener('message', (e) => {
         try {
           const buf = Buffer.from(e.data);
           const messages = this.deserializeMessages(buf);
@@ -655,7 +658,7 @@ class WSClient extends Client {
             return;
           }
           for (const msg of messages) {
-            await this.dispatchMessage(msg);
+            this.dispatchMessage(msg);
           }
         } catch (err) {
           if (err instanceof DecryptionError) {
@@ -1006,10 +1009,10 @@ class RemotePortForwarder {
 
   randomAlphaNum(len = 10) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const bytes = crypto.randomBytes(len);
     let result = '';
     for (let i = 0; i < len; i++) {
-      const idx = Math.floor(Math.random() * chars.length);
-      result += chars[idx];
+      result += chars[bytes[i] % chars.length];
     }
     return result;
   }
@@ -1031,14 +1034,28 @@ function parseArgs(argv) {
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--server-url') args.serverUrl = argv[++i];
-    else if (a === '--encryption-key') args.encryptionKey = argv[++i];
-    else if (a === '--user-agent') args.userAgent = argv[++i];
-    else if (a === '--proxy') args.proxy = argv[++i];
-    else if (a === '--retry-attempts') args.retryAttempts = parseInt(argv[++i], 10);
-    else if (a === '--retry-duration') args.retryDuration = parseFloat(argv[++i]);
-    else {
-      console.log(`[!] Could not find argument \`${a}\`.`)
+    switch (a) {
+      case '--server-url':
+      case '--encryption-key':
+      case '--user-agent':
+      case '--proxy':
+      case '--retry-attempts':
+      case '--retry-duration':
+        if (i + 1 >= argv.length) {
+          console.log(`[!] ${a} requires a value.`);
+          break;
+        }
+        i++;
+        if (a === '--retry-attempts') args.retryAttempts = parseInt(argv[i], 10);
+        else if (a === '--retry-duration') args.retryDuration = parseFloat(argv[i]);
+        else if (a === '--server-url') args.serverUrl = argv[i];
+        else if (a === '--encryption-key') args.encryptionKey = argv[i];
+        else if (a === '--user-agent') args.userAgent = argv[i];
+        else if (a === '--proxy') args.proxy = argv[i];
+        break;
+      default:
+        console.log(`[!] Could not find argument \`${a}\`.`);
+        break;
     }
   }
   return args;
