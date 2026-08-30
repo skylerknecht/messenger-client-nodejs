@@ -731,7 +731,6 @@ class HTTPClient extends Client {
   constructor(serverUrl, encryptionKey, userAgent) {
     super(encryptionKey, userAgent);
     this.serverUrl = String(serverUrl).replace(/\/+$/g, '');
-    this.identifier = '';
     this.upstream_messages = [];
     this._pending = [];
     this._timeoutMs = 10000;

@@ -17,8 +17,6 @@ def add_arguments(parser):
                      help="Server URL the client should connect to.")
     cfg.add_argument("-e", "--encryption-key", default="",
                      help="AES encryption key to embed (optional).")
-    cfg.add_argument("--messenger-id", default="",
-                     help="Hardcoded Messenger ID (optional).")
     cfg.add_argument("--user-agent", default=USER_AGENT,
                      help="Custom HTTP/WebSocket User-Agent string (optional).")
     cfg.add_argument("--proxy", default="",
