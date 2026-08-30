@@ -10,7 +10,7 @@ try {
   var WebSocket = require('ws');
   wsImported = true;
 } catch {
-  console.warn('[!] Failed to import "ws" module — WebSocket support disabled.');
+  console.warn('[!] Failed to import "ws" module -- WebSocket support disabled.');
 }
 {% endif %}
 /* AES */
@@ -29,7 +29,7 @@ function decrypt(key, ciphertext) {
   return Buffer.concat([decipher.update(data), decipher.final()]);
 }
 
-// Raised when an encrypted payload cannot be decrypted — almost always a wrong
+// Raised when an encrypted payload cannot be decrypted -- almost always a wrong
 // encryption key. Treated as fatal: the messenger can never decrypt server
 // traffic, so main() logs once and stops instead of reconnecting in a loop.
 class DecryptionError extends Error {
@@ -112,7 +112,7 @@ class MessageParser {
     [bind_port, v] = MessageParser.readUint32(v);
     [address_type, v] = MessageParser.readUint32(v);
     [reason, v] = MessageParser.readUint32(v);
-    // remote_addr / remote_port are optional — the server omits them when it
+    // remote_addr / remote_port are optional -- the server omits them when it
     // has no remote info (e.g. a reason!=0 denial). Only read them if bytes
     // remain, otherwise a Rep without them overruns the buffer.
     remote_addr = '';
@@ -402,7 +402,7 @@ class Client {
 
   async dispatchMessage(message) {
     if (message.kind === 'InitiateTCPClientReq') {
-      // Background — don't await
+      // Background -- don't await
       this.handleInitiateTCPClientReq(message.client_id, message.destination_host, message.destination_port)
         .catch(() => {});
     } else if (message.kind === 'InitiateTCPClientRep') {
@@ -415,7 +415,7 @@ class Client {
         return;
       }
       socket.resume();
-      // Don't await stream — it runs in background
+      // Don't await stream -- it runs in background
       this.stream(message.client_id).catch(() => {});
     } else if (message.kind === 'SendDataMessage') {
       const socket = this.tcpClients.get(message.client_id);
@@ -428,7 +428,7 @@ class Client {
       }
       socket.write(message.data);
     } else if (message.kind === 'InitiateBINDReq') {
-      // Background — don't await
+      // Background -- don't await
       this.handleBind(message).catch(() => {});
     } else if (message.kind === 'CheckInMessage') {
       this.identifier = message.messenger_id;
@@ -1108,7 +1108,7 @@ async function main() {
       break;
     } catch (e) {
       if (e instanceof DecryptionError) {
-        console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
         return;
       }
       console.error(`[!] Connection failed: ${e?.message || e}`);
@@ -1126,7 +1126,7 @@ async function main() {
       await client.start();
     } catch (e) {
       if (e instanceof DecryptionError) {
-        console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
         return;
       }
       console.error(`[!] Disconnected: ${e?.message || e}`);
@@ -1154,7 +1154,7 @@ async function main() {
         await client.start();
       } catch (e) {
         if (e instanceof DecryptionError) {
-          console.error('[!] Decryption failed — the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+          console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
           return;
         }
         console.error(`[!] Reconnection failed: ${e?.message || e}`);
