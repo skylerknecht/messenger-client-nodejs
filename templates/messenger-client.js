@@ -426,7 +426,7 @@ class Client {
       if (!message.data || message.data.length === 0) {
         this.tcpClients.delete(message.client_id);
         socket._serverClosed = true;
-        try { socket.destroy(); } catch {}
+        try { socket.end(); } catch {}
         return;
       }
       socket.write(message.data);
@@ -643,7 +643,15 @@ class WSClient extends Client {
   }
 
   async start() {
-    await Promise.all([this.receiveLoop(), this.sendLoop()]);
+    const recv = this.receiveLoop();
+    const send = this.sendLoop();
+    try {
+      await Promise.race([recv, send]);
+    } finally {
+      try { this.ws.close(); } catch {}
+      this._signalSendLoop();
+      await Promise.allSettled([recv, send]);
+    }
   }
 
   async receiveLoop() {
@@ -691,7 +699,7 @@ class WSClient extends Client {
           await new Promise(r => { this._sendResolve = r; });
           if (!this.ws || this.ws.readyState !== WebSocket.OPEN) break;
         }
-        while (this.upstream_messages.length > 0)
+        while (this.upstream_messages.length > 0 && this._pending.length < MAX_BATCH_SIZE)
           this._pending.push(this.upstream_messages.shift());
       }
       try {
@@ -846,7 +854,7 @@ class HTTPClient extends Client {
     await this.readvertiseForwarders();
     while (!this.killed) {
       if (this._pending.length === 0) {
-        while (this.upstream_messages.length > 0)
+        while (this.upstream_messages.length > 0 && this._pending.length < MAX_BATCH_SIZE)
           this._pending.push(this.upstream_messages.shift());
       }
 
@@ -1184,6 +1192,8 @@ async function main() {
     client.cleanup();
   }
 }
+
+const MAX_BATCH_SIZE = 100;
 
 const DEFAULTS = {
   SERVER: '{{ server_url }}',
