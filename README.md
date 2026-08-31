@@ -48,7 +48,6 @@ the hardcoded options. Those options and their definitions are shown below.
 | [Server URL](#server-url)                     | `--server-url`            | localhost:8080         |
 | [Encryption Key](#encryption-key)             | `--encryption-key`        | None                   |
 | [User Agent](#user-agent)                     | `--user-agent`            | [Specified Here](https://github.com/skylerknecht/messenger-client-nodejs/blob/main/builder.py#L6) |
-| [Messenger ID](#messenger-id)                 | `--messenger-id`          | None                   |
 | [Remote Port Forwards](#remote-port-forwards) | `--remote-port-forwards`  | None                   |
 | [Retry Duration](#retry-duration)             | `--retry-duration`        | One Minute             |
 | [Retry Attempts](#retry-attempts)             | `--retry-attempts`        | Five                   |
@@ -87,14 +86,6 @@ For HTTP-based protocols, the operator can control the user-agent header.
 
 ```
 builder.py --user-agent "Test User Agent"
-```
-
-#### Messenger ID
-
-Operators can hardcode a messenger ID into the client. If not provided, the client will generate a random ID.
-
-```
-builder.py --messenger-id my-messenger
 ```
 
 #### Remote Port Forwards
