@@ -810,6 +810,7 @@ class HTTPClient extends Client {
     try {
       resp = await this._postBinary(this.serverUrl, payload, 10000);
     } catch (e) {
+      if (e instanceof DecryptionError) throw e;
       throw new Error(`Connect POST failed: ${e.message}`);
     }
 
@@ -836,6 +837,7 @@ class HTTPClient extends Client {
       }
       this.identifier = msg0.messenger_id;
     } catch (e) {
+      if (e instanceof DecryptionError) throw e;
       throw new Error(`Failed to parse connect response: ${e.message}`);
     }
   }
@@ -855,6 +857,7 @@ class HTTPClient extends Client {
       try {
         resp = await this._postBinary(this.serverUrl, payload, 15000);
       } catch (e) {
+        if (e instanceof DecryptionError) throw e;
         throw new Error(`HTTP poll failed: ${e.message}`);
       }
 
