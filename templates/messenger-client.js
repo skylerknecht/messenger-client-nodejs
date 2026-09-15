@@ -6,11 +6,18 @@ const http = require('http');
 const https = require('https');
 
 let wsImported = false;
+let _wsModule = false;
 try {
   var WebSocket = require('ws');
   wsImported = true;
+  _wsModule = true;
 } catch {
-  console.warn('[!] Failed to import "ws" module -- WebSocket support disabled.');
+  WebSocket = globalThis.WebSocket;
+  if (WebSocket) {
+    wsImported = true;
+  } else {
+    console.warn('[!] WebSocket unavailable -- install "ws" or use Node 22+.');
+  }
 }
 {% endif %}
 /* AES */
@@ -606,7 +613,11 @@ class WSClient extends Client {
       this.ws = null;
     }
 {% if not electron %}
-    this.ws = new WebSocket(this.serverUrl, this.wsOptions);
+    if (_wsModule) {
+      this.ws = new WebSocket(this.serverUrl, this.wsOptions);
+    } else {
+      this.ws = new WebSocket(this.serverUrl);
+    }
 {% else %}
     this.ws = new WebSocket(this.serverUrl);
 {% endif %}
@@ -706,8 +717,12 @@ class WSClient extends Client {
         const batch = [CheckInMessage(this.identifier), ...this._pending];
         const payload = this.serializeMessages(batch);
 {% if not electron %}
-        const err = await new Promise(r => this.ws.send(payload, r));
-        if (err) throw err;
+        if (_wsModule) {
+          const err = await new Promise(r => this.ws.send(payload, r));
+          if (err) throw err;
+        } else {
+          this.ws.send(payload);
+        }
 {% else %}
         this.ws.send(payload);
 {% endif %}
