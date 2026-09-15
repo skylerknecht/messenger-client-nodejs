@@ -30,7 +30,7 @@ function decrypt(key, ciphertext) {
 }
 
 // Raised when an encrypted payload cannot be decrypted -- almost always a wrong
-// encryption key. Treated as fatal: the messenger can never decrypt server
+// encryption key. Treated as fatal: the client can never decrypt server
 // traffic, so main() logs once and stops instead of reconnecting in a loop.
 class DecryptionError extends Error {
   constructor(message) {
@@ -60,7 +60,7 @@ const MSG = {
   CHECK_OUT:    0x07,
 };
 
-const CheckInMessage = (messenger_id) => ({ kind: 'CheckInMessage', messenger_id });
+const CheckInMessage = (client_id) => ({ kind: 'CheckInMessage', client_id });
 const InitiateTCPClientReq = (client_id, destination_host, destination_port, listening_host = '', listening_port = 0) => ({ kind: 'InitiateTCPClientReq', client_id, destination_host, destination_port, listening_host, listening_port });
 const InitiateTCPClientRep = (client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port) => ({ kind: 'InitiateTCPClientRep', client_id, bind_address, bind_port, address_type, reason, remote_addr, remote_port });
 const SendDataMessage = (client_id, data) => ({ kind: 'SendDataMessage', client_id, data });
@@ -85,8 +85,8 @@ class MessageParser {
   }
 
   static parseCheckIn(value) {
-    const [messenger_id] = MessageParser.readString(value);
-    return CheckInMessage(messenger_id);
+    const [client_id] = MessageParser.readString(value);
+    return CheckInMessage(client_id);
   }
 
   static parseInitiateTCPClientReq(value) {
@@ -222,8 +222,8 @@ class MessageBuilder {
     return out;
   }
 
-  static buildCheckInMessage(messenger_id) {
-    return MessageBuilder.buildString(messenger_id);
+  static buildCheckInMessage(client_id) {
+    return MessageBuilder.buildString(client_id);
   }
 
   static buildInitiateTCPClientReq(client_id, destination_host, destination_port, listening_host = '', listening_port = 0) {
@@ -307,7 +307,7 @@ class MessageBuilder {
       }
       case 'CheckInMessage': {
         message_type = MSG.CHECK_IN;
-        value = MessageBuilder.buildCheckInMessage(msg.messenger_id);
+        value = MessageBuilder.buildCheckInMessage(msg.client_id);
         break;
       }
       case 'InitiateBINDReq': {
@@ -434,7 +434,7 @@ class Client {
       // Background -- don't await
       this.handleBind(message).catch(() => {});
     } else if (message.kind === 'CheckInMessage') {
-      this.identifier = message.messenger_id;
+      this.identifier = message.client_id;
     } else if (message.kind === 'CheckOutMessage') {
       this.handleCheckout();
     }
@@ -639,7 +639,7 @@ class WSClient extends Client {
     assert(messages.length > 0, `[!] Invalid response from server ${messages}`);
     const checkInMessage = messages[0];
     assert.strictEqual(checkInMessage.kind, 'CheckInMessage', `[!] Invalid response from server: ${messages}`);
-    this.identifier = checkInMessage.messenger_id;
+    this.identifier = checkInMessage.client_id;
   }
 
   async start() {
@@ -843,7 +843,7 @@ class HTTPClient extends Client {
       if (msg0.kind !== 'CheckInMessage') {
         throw new Error(`Expected CheckInMessage, got ${msg0.kind}`);
       }
-      this.identifier = msg0.messenger_id;
+      this.identifier = msg0.client_id;
     } catch (e) {
       if (e instanceof DecryptionError) throw e;
       throw new Error(`Failed to parse connect response: ${e.message}`);
@@ -908,8 +908,8 @@ class HTTPClient extends Client {
 /* REMOTE PORT FORWARDER */
 
 class RemotePortForwarder {
-  constructor(messenger, bindId, listeningHost, listeningPort, destinationHost, destinationPort) {
-    this.messenger = messenger;
+  constructor(parent, bindId, listeningHost, listeningPort, destinationHost, destinationPort) {
+    this.parent = parent;
     this.identifier = bindId;
     this.listening_host = listeningHost;
     this.listening_port = Number(listeningPort);
@@ -922,13 +922,13 @@ class RemotePortForwarder {
   async cleanup() {
     if (this._cleanedUp) return;
     this._cleanedUp = true;
-    const idx = this.messenger.remotePortForwarders.indexOf(this);
+    const idx = this.parent.remotePortForwarders.indexOf(this);
     if (idx === -1) return;
-    this.messenger.remotePortForwarders.splice(idx, 1);
-    this.messenger.closeConnectionsForBind(this.identifier);
-    if (!this.messenger.killed) {
+    this.parent.remotePortForwarders.splice(idx, 1);
+    this.parent.closeConnectionsForBind(this.identifier);
+    if (!this.parent.killed) {
       try {
-        await this.messenger.sendUpstreamMessage(
+        await this.parent.sendUpstreamMessage(
           InitiateBINDRep(this.identifier, this.listening_host, this.listening_port, 5));
       } catch {}
     }
@@ -937,7 +937,7 @@ class RemotePortForwarder {
   async start() {
     return new Promise((resolve, reject) => {
       this.server = net.createServer((socket) => {
-        if (this.messenger.killed || !this.messenger.remotePortForwarders.includes(this)) {
+        if (this.parent.killed || !this.parent.remotePortForwarders.includes(this)) {
           try { socket.destroy(); } catch {}
           return;
         }
@@ -945,10 +945,10 @@ class RemotePortForwarder {
         const client_id = this.randomAlphaNum(10);
 
         socket._bindId = this.identifier;
-        this.messenger.tcpClients.set(client_id, socket);
+        this.parent.tcpClients.set(client_id, socket);
 
-        if (!this.messenger.remotePortForwarders.includes(this)) {
-          this.messenger.tcpClients.delete(client_id);
+        if (!this.parent.remotePortForwarders.includes(this)) {
+          this.parent.tcpClients.delete(client_id);
           socket._serverClosed = true;
           try { socket.destroy(); } catch {}
           return;
@@ -956,7 +956,7 @@ class RemotePortForwarder {
 
         socket.pause();
 
-        this.messenger.sendUpstreamMessage(
+        this.parent.sendUpstreamMessage(
           InitiateTCPClientReq(
             client_id,
             this.destination_host,
@@ -968,9 +968,9 @@ class RemotePortForwarder {
 
         socket.once('close', async () => {
           if (!socket._serverClosed) {
-            const removed = this.messenger.tcpClients.delete(client_id);
-            if (removed && !this.messenger.killed) {
-              await this.messenger.sendUpstreamMessage(
+            const removed = this.parent.tcpClients.delete(client_id);
+            if (removed && !this.parent.killed) {
+              await this.parent.sendUpstreamMessage(
                 SendDataMessage(client_id, Buffer.alloc(0))
               );
             }
@@ -982,7 +982,7 @@ class RemotePortForwarder {
 
       this.server.once('listening', () => {
         const addr = this.server.address();
-        if (this.messenger.killed) {
+        if (this.parent.killed) {
           try { this.server.close(); } catch {}
           resolve(1);
           return;
@@ -990,7 +990,7 @@ class RemotePortForwarder {
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
-        this.messenger.remotePortForwarders.push(this);
+        this.parent.remotePortForwarders.push(this);
         this.server.on('error', () => this.cleanup());
         resolve(0);
       });
@@ -1135,7 +1135,7 @@ async function main() {
       break;
     } catch (e) {
       if (e instanceof DecryptionError) {
-        console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        console.error('[!] Decryption failed -- the encryption key is likely incorrect. Cannot decrypt server traffic and is stopping.');
         return;
       }
       console.error(`[!] Connection failed: ${e?.message || e}`);
@@ -1153,7 +1153,7 @@ async function main() {
       await client.start();
     } catch (e) {
       if (e instanceof DecryptionError) {
-        console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        console.error('[!] Decryption failed -- the encryption key is likely incorrect. Cannot decrypt server traffic and is stopping.');
         return;
       }
       console.error(`[!] Disconnected: ${e?.message || e}`);
@@ -1181,7 +1181,7 @@ async function main() {
         await client.start();
       } catch (e) {
         if (e instanceof DecryptionError) {
-          console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+          console.error('[!] Decryption failed -- the encryption key is likely incorrect. Cannot decrypt server traffic and is stopping.');
           return;
         }
         console.error(`[!] Reconnection failed: ${e?.message || e}`);
@@ -1191,6 +1191,7 @@ async function main() {
   } finally {
     client.cleanup();
   }
+
 }
 
 const MAX_BATCH_SIZE = 100;
@@ -1206,8 +1207,16 @@ const DEFAULTS = {
 
 {% if not electron %}
 if (require.main === module) {
+{% if exit_on_close %}
+  main().then(() => process.exit(0)).catch(console.error);
+{% else %}
   main().catch(console.error);
+{% endif %}
 }
 {% else %}
+{% if exit_on_close %}
+main().then(() => process.exit(0)).catch(console.error);
+{% else %}
 main().catch(console.error);
+{% endif %}
 {% endif %}

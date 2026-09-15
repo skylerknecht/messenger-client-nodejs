@@ -28,6 +28,10 @@ def add_arguments(parser):
     retry.add_argument("--retry-attempts", type=int, default=5,
                        help="Number of retry attempts before giving up.")
 
+    behavior = parser.add_argument_group("Behavior")
+    behavior.add_argument("--exit-on-close", action="store_true", default=False,
+                          help="Call process.exit() when the client stops instead of returning.")
+
 
 def build(args):
     template_dir = Path(__file__).resolve().parent / "templates"
