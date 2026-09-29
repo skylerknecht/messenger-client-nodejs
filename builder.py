@@ -41,7 +41,7 @@ def build(args):
         lstrip_blocks=True,
     )
 
-    template = env.get_template("messenger-client.js")
+    template = env.get_template("client.js")
     rendered = template.render(**vars(args))
 
     out_path = Path(args.name)
