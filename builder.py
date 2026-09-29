@@ -49,7 +49,7 @@ def build(args):
     out_path = Path(args.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
-    print(f"Wrote Node JS client to '{out_path}'")
+    print(f"[+] Wrote Node.js client to '{out_path}'")
 
     if args.electron:
         out_dir = out_path.parent
@@ -58,13 +58,31 @@ def build(args):
         main_rendered = main_template.render(**vars(args))
         main_path = out_dir / "main.js"
         main_path.write_text(main_rendered, encoding="utf-8")
-        print(f"Wrote Electron main process to '{main_path}'")
+        print(f"[+] Wrote Electron main process to '{main_path}'")
 
         renderer_template = env.get_template("electron-renderer.html")
         renderer_rendered = renderer_template.render(client_name=out_path.name)
         renderer_path = out_dir / "renderer.html"
         renderer_path.write_text(renderer_rendered, encoding="utf-8")
-        print(f"Wrote Electron renderer to '{renderer_path}'")
+        print(f"[+] Wrote Electron renderer to '{renderer_path}'")
+
+        print()
+        print("Next: set up and run the Electron app:")
+        print("    npm init -y")
+        print("    npm install --save-dev electron")
+        print("    # then edit package.json and set:  \"main\": \"main.js\"")
+        print("    npx electron .")
+        print()
+        print(f"main.js opens a hidden BrowserWindow that loads renderer.html,")
+        print(f"which pulls in {out_path.name} via <script src>. Traffic routes through")
+        print("Chromium so OS-level and PAC proxies apply automatically.")
+    else:
+        print()
+        print("Next: bundle and obfuscate into a single .js:")
+        print("    npx webpack --config webpack.conf.js")
+        print()
+        print("The included webpack.conf.js has devtool:false (no source maps) and")
+        print("webpack-obfuscator enabled. Output: client.obf.js.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(usage=argparse.SUPPRESS)
