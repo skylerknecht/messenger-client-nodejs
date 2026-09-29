@@ -11,6 +11,8 @@ def add_arguments(parser):
                      help="Name of the output.")
     builder.add_argument("--electron", action="store_true",
                      help="Build for Electron (uses fetch and native WebSocket for proxy awareness).")
+    builder.add_argument("--no-print", action="store_true",
+                     help="Compile output-suppression into the client (console.* and process.stdout/stderr are redirected to a null sink at startup).")
 
     cfg = parser.add_argument_group("Client configuration")
     cfg.add_argument("--server-url", default="localhost:8080",

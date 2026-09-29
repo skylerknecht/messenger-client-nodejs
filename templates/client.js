@@ -1,3 +1,19 @@
+{% if no_print %}
+{
+  const _noop = () => {};
+  console.log = _noop;
+  console.info = _noop;
+  console.warn = _noop;
+  console.error = _noop;
+  console.debug = _noop;
+  try {
+    const fs = require('fs');
+    const _sink = fs.createWriteStream('/dev/null', { flags: 'a' });
+    process.stdout.write = _sink.write.bind(_sink);
+    process.stderr.write = _sink.write.bind(_sink);
+  } catch (e) {}
+}
+{% endif %}
 const crypto = require('crypto');
 const assert = require('assert');
 const net = require('net');
@@ -1035,6 +1051,19 @@ function sha256Bytes(s) {
   return crypto.createHash('sha256').update(String(s), 'utf8').digest();
 }
 
+function printHelp() {
+  console.log('Usage: client [options]');
+  console.log('');
+  console.log('Options:');
+  console.log('  --server-url <url>         Server URL to connect to');
+  console.log('  --encryption-key <key>     AES encryption key');
+  console.log('  --user-agent <ua>          Custom User-Agent string');
+  console.log('  --proxy <url>              Proxy URL');
+  console.log('  --retry-duration <secs>    Total time to retry connecting');
+  console.log('  --retry-attempts <n>       Number of retry attempts');
+  console.log('  -h, --help                 Show this help message');
+}
+
 function parseArgs(argv) {
   const args = {
     server: null,
@@ -1046,6 +1075,11 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
+      case '-h':
+      case '--help':
+        printHelp();
+        process.exit(0);
+        break;
       case '--server-url':
       case '--encryption-key':
       case '--user-agent':
