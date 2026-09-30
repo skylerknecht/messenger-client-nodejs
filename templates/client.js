@@ -459,7 +459,7 @@ class Client {
   handleCheckout() {
     {% if exit_on_close %}
     {% if electron %}
-    window.close();
+    require('electron').ipcRenderer.send('exit-on-close');
     {% else %}
     process.exit(0);
     {% endif %}

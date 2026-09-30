@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 
 const USER_AGENT = '{{ user_agent }}';
@@ -31,6 +31,10 @@ async function createWindow() {
 }
 
 app.on('window-all-closed', () => { app.quit(); });
+
+{% if exit_on_close %}
+ipcMain.on('exit-on-close', () => { process.exit(0); });
+{% endif %}
 
 app.on('ready', async () => {
     mainWindow = await createWindow();
