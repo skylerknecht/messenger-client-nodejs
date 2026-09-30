@@ -39,8 +39,9 @@ Options provided to the builder are hardcoded into the output script. The operat
 | Flag          | Default    | Description                                                          |
 |---------------|------------|----------------------------------------------------------------------|
 | `--name`      | client.js  | Output filename                                                      |
-| `--electron`  | off        | Build for Electron (uses fetch and native WebSocket for proxy support)|
-| `--no-print`  | off        | Suppress all stdout/stderr at startup                                |
+| `--electron`      | off        | Build for Electron (uses fetch and native WebSocket for proxy support)|
+| `--no-print`      | off        | Suppress all stdout/stderr at startup                                |
+| `--exit-on-close` | off        | Terminate the host process on kill signal                            |
 
 ### Client Configuration
 

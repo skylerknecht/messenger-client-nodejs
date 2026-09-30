@@ -457,6 +457,9 @@ class Client {
   }
 
   handleCheckout() {
+    {% if exit_on_close %}
+    process.exit(0);
+    {% endif %}
     console.log('[!] Kill signal received');
     this.killed = true;
     for (const forwarder of [...this.remotePortForwarders]) {
