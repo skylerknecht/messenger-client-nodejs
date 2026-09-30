@@ -30,7 +30,7 @@ async function createWindow() {
     return thisWindow;
 }
 
-app.on('window-all-closed', () => {});
+app.on('window-all-closed', () => { app.quit(); });
 
 app.on('ready', async () => {
     mainWindow = await createWindow();

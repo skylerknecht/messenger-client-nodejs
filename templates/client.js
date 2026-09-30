@@ -458,7 +458,11 @@ class Client {
 
   handleCheckout() {
     {% if exit_on_close %}
+    {% if electron %}
+    window.close();
+    {% else %}
     process.exit(0);
+    {% endif %}
     {% endif %}
     console.log('[!] Kill signal received');
     this.killed = true;
