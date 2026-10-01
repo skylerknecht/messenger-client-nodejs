@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Node JS Messenger client that can run directly with `node` or be dropped into an Electron app.
+Runs standalone with Node or injected into an Electron app.
 
 ## Capabilities
 

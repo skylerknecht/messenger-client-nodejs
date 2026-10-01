@@ -1153,7 +1153,8 @@ async function main() {
   }
 
   let client = null;
-  for (const attempt of attempts) {
+  for (let i = 0; i < attempts.length; i++) {
+    const attempt = attempts[i];
     const candidateUrl = `${attempt}://${remainder}/`;
     try {
 {% if not electron %}
@@ -1161,10 +1162,10 @@ async function main() {
 {% else %}
       if (attempt.includes('ws')) {
 {% endif %}
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} (${i + 1}/${attempts.length})`);
         client = new WSClient(candidateUrl, encryptionKey, userAgent);
       } else if (attempt.includes('http')) {
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()}`);
+        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} (${i + 1}/${attempts.length})`);
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
         console.log(`[!] Unsupported scheme ${attempt.toUpperCase()}`);
