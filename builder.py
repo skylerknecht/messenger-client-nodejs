@@ -16,7 +16,7 @@ def add_arguments(parser):
     builder.add_argument("--electron", action="store_true",
                      help="Build for Electron (uses fetch and native WebSocket for proxy awareness).")
     builder.add_argument("--no-print", action="store_true",
-                     help="Compile output-suppression into the client (console.* and process.stdout/stderr are redirected to a null sink at startup).")
+                     help="Omit client output statements when rendering the templates.")
     builder.add_argument("--exit-on-close", action="store_true",
                      help="Call process.exit(0) when the server sends a kill signal, terminating the host process.")
     builder.add_argument("--no-adaptive-polling", action="store_true",
@@ -66,23 +66,6 @@ def build(args):
     template = env.get_template("client.js")
     rendered = template.render(**vars(args))
 
-    if args.no_print:
-        _console_prefixes = ('console.log(', 'console.error(', 'console.warn(', 'console.info(', 'console.debug(')
-        lines = rendered.splitlines()
-        result = []
-        skip_until_close = False
-        for l in lines:
-            if skip_until_close:
-                if ');' in l:
-                    skip_until_close = False
-                continue
-            if l.lstrip().startswith(_console_prefixes):
-                # Check if this is a multiline call (no closing paren on this line)
-                if l.count('(') > l.count(')'):
-                    skip_until_close = True
-                continue
-            result.append(l)
-        rendered = '\n'.join(result) + '\n'
 
     out_path = Path(args.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)

